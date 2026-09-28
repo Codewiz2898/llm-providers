@@ -1,0 +1,35 @@
+{
+  "name": "llm-providers",
+  "version": "0.1.0",
+  "private": true,
+  "description": "One library for calling models, whoever serves them: Anthropic, OpenRouter, OpenAI-compatible servers (vLLM), Ollama — and System One questions (Jev, CLM).",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "engines": { "node": ">=20" },
+  "packageManager": "pnpm@9.7.0",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:live": "LIVE=1 vitest run test/live",
+    "lint": "biome check src test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.114.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.8.3",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.1.4"
+  }
+}
