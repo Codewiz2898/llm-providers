@@ -93,10 +93,42 @@ certainty(answers.kind!);      // 0..1, on one scale for choice and noul
 
 The OpenRouter key only ever goes to OpenRouter. `clm()` carries CLM's own key, or none.
 
+## From Python, or anything that speaks HTTP
+
+Run the library as a local service. It holds the keys; callers never do.
+
+```bash
+npx llm-providers serve                        # 127.0.0.1:8787, providers from the environment
+npx llm-providers serve --config llm.json      # add vLLM servers etc.; keys by env-var NAME only
+```
+
+```bash
+pip install "git+ssh://git@github.com/Codewiz2898/llm-providers.git#subdirectory=python"
+```
+
+```python
+from llm_providers import Client
+
+with Client() as llm:
+    r = llm.complete(model="openrouter:moonshotai/kimi-k2.7-code",
+                     messages=[{"role": "user", "content": "order a pepsi"}], max_tokens=4096)
+```
+
+The client:
+- has a sync `Client` and an async `AsyncClient`;
+- uses Python names, while the service speaks the library's own JSON;
+- raises `LlmError` with the same `kind` as the TypeScript library.
+
+When Python gives up, by a timeout or a cancel, the service aborts the model call. The service
+binds to `127.0.0.1`, and it requires `LLM_PROVIDERS_TOKEN` before it will listen anywhere else.
+[docs/SERVICE.md](docs/SERVICE.md) has the endpoints, the config format and the error-to-status
+map.
+
 ## Develop
 
 ```bash
-pnpm install && pnpm typecheck && pnpm test && pnpm lint
+pnpm install && pnpm typecheck && pnpm test && pnpm lint && pnpm build
+cd python && python3 -m venv .venv && .venv/bin/pip install -e ".[dev]" && .venv/bin/python -m pytest -q
 ```
 
 Live smoke, which is opt-in and costs a few cents at most: Ollama locally, plus OpenRouter,
