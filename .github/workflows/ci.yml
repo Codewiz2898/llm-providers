@@ -36,3 +36,31 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm build
+
+  python:
+    name: python (${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 is the floor (python/pyproject.toml); 3.13 is current.
+        python: ['3.10', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      # The cross-boundary tests start the REAL Node service, so it is built first.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: python/pyproject.toml
+      - run: pip install -e ".[dev]"
+        working-directory: python
+      - run: python -m pytest -q
+        working-directory: python
