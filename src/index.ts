@@ -31,6 +31,10 @@ export type {
   SystemOneResult,
   SystemOneTarget,
 } from './systemOne/index.js';
+export { buildConfig, ConfigError, configFromEnv, parseConfig } from './server/config.js';
+export type { Built, ProviderConfig, ServiceConfig, SystemOneConfig } from './server/config.js';
+export { createService, DEFAULT_PORT, STATUS_FOR_KIND, startService } from './server/http.js';
+export type { RunningService, ServiceOptions } from './server/http.js';
 export type * from './types.js';
 
 export const VERSION = '0.1.0';
