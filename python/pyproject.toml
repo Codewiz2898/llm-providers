@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llm-providers"
+version = "0.1.0"
+description = "Python client for the llm-providers service: Anthropic, OpenRouter, vLLM, Ollama and System One behind one call."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["httpx>=0.27"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_providers"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["live: calls a real model through a running service (LIVE=1)"]
