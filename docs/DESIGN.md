@@ -1,6 +1,9 @@
 # llm-providers: one library for calling models, whoever serves them
 
-> Status: **LLD, awaiting review.** Nothing is built yet. It is extracted from Jarvis
+> Status: **BUILT (2026-09-29): tests pass; live on 5 of 6 targets.** The LLD was approved the same
+> day. Unit and contract suites: 56 tests. Live answers came from Ollama (JSON and a tool call),
+> Ollama's `/v1` standing in for vLLM, OpenRouter (JSON with cost) and Jev. Anthropic's live test
+> is blocked on an invalid key (401), not on the library. Extracted from Jarvis
 > (`Codewiz2898/jarvis`, `apps/server/src/ai`), where three hand-written clients and a Jev client
 > each learned the same lessons separately.
 
@@ -119,6 +122,12 @@ interface CompletionResult {
 }
 ```
 
+**As built, two additions:**
+- `CompletionResult.message` is the assistant turn to append when continuing. It carries
+  `raw: { provider, content }`, and Anthropic needs its own content back because thinking blocks
+  must precede a tool result.
+- `Usage` gains `cacheReadTokens` and `cacheWriteTokens` (Anthropic).
+
 The **model ref** is `provider:model`, split on the first colon, so model ids that contain colons
 (`qwen3:8b`) survive. Providers are registered once:
 
@@ -150,6 +159,7 @@ const r = await llm.complete({ model: 'openrouter:moonshotai/kimi-k2.7-code', ..
 | Qwen3 on Ollama spends the budget thinking unless told not to | ollama | `think: false` unless `thinking: 'adaptive'` | — |
 | A cancel must abort the HTTP request, not just the next step | all | `signal` goes to `fetch` / the SDK | — |
 | A 2m11s decision call had no timeout (Jarvis, 2026-09-27) | all | `timeoutMs` default 120 s; `LlmError('timeout')` | — |
+| The OpenAI wire has no thinking switch: Qwen3 on Ollama's `/v1` spent 400 of 400 tokens reasoning (found in the live smoke) | openai-compatible | `thinkingOffBody`, the server's own fields sent when `thinking: 'off'` (vLLM + Qwen3: `chat_template_kwargs.enable_thinking = false`) | — |
 
 **Errors:** `LlmError` has a `kind` of `auth`, `rate_limit`, `schema_rejected`, `bad_request`,
 `server`, `timeout`, `aborted`, `network` or `parse`. It carries `status`, `provider` and `model`,
@@ -189,15 +199,17 @@ switches over (§10).
 
 ## 9. Acceptance criteria
 
-- [ ] `pnpm typecheck && pnpm test && pnpm lint` green on a clean clone.
-- [ ] Every row of §6 has a unit test that fails without its behaviour.
-- [ ] The contract table passes for all four providers.
-- [ ] Live: Ollama structured JSON and a tool call; OpenAI-compatible against Ollama `/v1`;
-      OpenRouter JSON with a schema; Anthropic JSON with a schema; Jev one choice question.
-- [ ] A System One call to a non-OpenRouter target never carries the OpenRouter key.
-- [ ] README: install, the four providers, System One, and the `onCall` hook.
-- [ ] Private repo `Codewiz2898/llm-providers`: `main` holds only the scaffold, and the library
-      arrives as a PR from a feature branch, for you to merge.
+- [x] `pnpm typecheck && pnpm test && pnpm lint` green. *56 tests, and every commit green on its
+      own.*
+- [x] Every row of §6 has a unit test that fails without its behaviour.
+- [x] The contract table passes for all four providers. *3 requests × 4 providers.*
+- [ ] Live: Ollama structured JSON and a tool call ✓; OpenAI-compatible against Ollama `/v1` ✓;
+      OpenRouter JSON with a schema ✓ (cost reported); Jev one choice question ✓. **Anthropic ✗:
+      the key in Jarvis's `.env` is rejected (401, key well-formed), so a new key is needed.**
+- [x] A System One call to a non-OpenRouter target never carries the OpenRouter key. *Unit test.*
+- [x] README: install, the four providers, System One, and the `onCall` hook.
+- [x] Private repo `Codewiz2898/llm-providers`: `main` holds only the scaffold, and the library
+      arrives as a PR from `feat/initial-library`.
 
 ## 10. Build order
 
