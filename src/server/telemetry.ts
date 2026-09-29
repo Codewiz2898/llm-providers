@@ -179,7 +179,8 @@ export function createTelemetry(o: {
           ...(u.inputTokens !== undefined ? { input_tokens: u.inputTokens } : {}),
           ...(u.outputTokens !== undefined ? { output_tokens: u.outputTokens } : {}),
           ...(u.costUsd !== undefined ? { cost_usd: u.costUsd } : {}),
-          ...(r.warnings?.length ? { warnings: r.warnings } : {}),
+          // A plain string, so a Loki query can group by it (an array lands as its JSON text).
+          ...(r.warnings?.length ? { warnings: r.warnings.join(',') } : {}),
           ...(r.error ? { error: r.error.message } : {}),
           captured: Boolean(captured),
           ...(captured ? capturedAttributes(captured) : {}),

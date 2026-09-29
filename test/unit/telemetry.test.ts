@@ -203,6 +203,7 @@ describe('the log record', () => {
       outcome: 'ok',
       input_tokens: 12,
       output_tokens: 3,
+      warnings: 'reasoning_fallback',
       captured: false,
     });
     expect(log?.spanContext?.traceId).toBe(span?.spanContext().traceId);
