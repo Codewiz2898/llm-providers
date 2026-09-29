@@ -1,6 +1,6 @@
 {
   "name": "llm-providers",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "One library for calling models, whoever serves them: Anthropic, OpenRouter, OpenAI-compatible servers (vLLM), Ollama — and System One questions (Jev, CLM).",
   "type": "module",

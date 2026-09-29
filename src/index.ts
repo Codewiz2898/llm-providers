@@ -4,6 +4,8 @@
 export { createLlm, parseModelRef, DEFAULT_TIMEOUT_MS } from './client.js';
 export type { CallEvent, Llm, LlmOptions } from './client.js';
 export { LlmError, redact } from './errors.js';
+export { connectLlm, DEFAULT_SERVICE_URL } from './remote.js';
+export type { ConnectOptions, RemoteLlm, ServiceHealth } from './remote.js';
 export type { LlmErrorKind } from './errors.js';
 export { extractJson } from './json.js';
 export { anthropic } from './providers/anthropic.js';
@@ -37,4 +39,4 @@ export { createService, DEFAULT_PORT, STATUS_FOR_KIND, startService } from './se
 export type { RunningService, ServiceOptions } from './server/http.js';
 export type * from './types.js';
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0';
