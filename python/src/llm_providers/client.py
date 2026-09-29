@@ -98,9 +98,15 @@ class Client:
         return _wire.completion_result(self._post("/v1/complete", body, timeout_ms))
 
     def system_one(
-        self, target: str, state: Any, questions: Dict[str, Any], *, timeout_ms: Optional[int] = None
+        self,
+        target: str,
+        state: Any,
+        questions: Dict[str, Any],
+        *,
+        timeout_ms: Optional[int] = None,
+        label: Optional[str] = None,
     ) -> SystemOneResult:
-        body = _wire.system_one_request(target, state, questions, timeout_ms)
+        body = _wire.system_one_request(target, state, questions, timeout_ms, label)
         return _wire.system_one_result(self._post("/v1/systemone", body, timeout_ms))
 
     def health(self) -> Dict[str, Any]:
@@ -168,9 +174,15 @@ class AsyncClient:
         return _wire.completion_result(await self._post("/v1/complete", body, timeout_ms))
 
     async def system_one(
-        self, target: str, state: Any, questions: Dict[str, Any], *, timeout_ms: Optional[int] = None
+        self,
+        target: str,
+        state: Any,
+        questions: Dict[str, Any],
+        *,
+        timeout_ms: Optional[int] = None,
+        label: Optional[str] = None,
     ) -> SystemOneResult:
-        body = _wire.system_one_request(target, state, questions, timeout_ms)
+        body = _wire.system_one_request(target, state, questions, timeout_ms, label)
         return _wire.system_one_result(await self._post("/v1/systemone", body, timeout_ms))
 
     async def health(self) -> Dict[str, Any]:

@@ -3,12 +3,12 @@
  *   llm-providers serve [--config llm.json] [--host 127.0.0.1] [--port 8787]
  *
  * Without --config, providers come from the environment (ANTHROPIC_API_KEY, OPENROUTER_API_KEY,
- * OLLAMA_URL, CLM_URL). LLM_PROVIDERS_TOKEN adds bearer auth, and is required off loopback.
- * See docs/SERVICE.md.
+ * OLLAMA_URL, CLM_URL). LLM_PROVIDERS_TOKEN adds one shared bearer token, required off loopback —
+ * or, as a gateway, the config's `apps` give each app its own. See docs/SERVICE.md, docs/GATEWAY.md.
  */
 import { readFileSync } from 'node:fs';
 import { ConfigError, buildConfig, configFromEnv, parseConfig } from './server/config.js';
-import { DEFAULT_PORT, startService } from './server/http.js';
+import { DEFAULT_PORT, isLoopback, startService } from './server/http.js';
 
 const USAGE = 'usage: llm-providers serve [--config <file.json>] [--host 127.0.0.1] [--port 8787]';
 
@@ -39,8 +39,11 @@ async function main(argv: string[]): Promise<void> {
     ...(flag('host') ? { host: flag('host') as string } : {}),
     ...(process.env.LLM_PROVIDERS_TOKEN ? { token: process.env.LLM_PROVIDERS_TOKEN } : {}),
   });
+  const apps = built.apps
+    ? `; apps: ${Object.keys(built.apps).join(', ') || 'none'} (tokenless calls: ${built.allowAnonymous !== false && isLoopback(flag('host') ?? '127.0.0.1') ? 'accepted as anonymous' : 'refused'})`
+    : '';
   process.stderr.write(
-    `llm-providers serving on ${svc.url} — providers: ${Object.keys(built.providers).join(', ') || 'none'}; system one: ${Object.keys(built.systemOne).join(', ') || 'none'}\n`,
+    `llm-providers serving on ${svc.url} — providers: ${Object.keys(built.providers).join(', ') || 'none'}; system one: ${Object.keys(built.systemOne).join(', ') || 'none'}${apps}\n`,
   );
   for (const s of built.skipped ?? []) process.stderr.write(`llm-providers skipped ${s.name}: ${s.reason}\n`);
   const stop = () => void svc.close().then(() => process.exit(0));

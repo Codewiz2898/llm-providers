@@ -184,7 +184,7 @@ describe('connectLlm', () => {
     const anon = (await connectLlm({ url: svc.url })
       .complete(ASK)
       .catch((e) => e)) as LlmError;
-    expect(anon.kind).toBe('auth');
+    expect(anon.kind).toBe('unauthorized');
     const llm = connectLlm({ url: svc.url, token: 'tok-1' });
     expect(await llm.health()).toEqual({ ok: true, providers: ['openrouter'], systemOne: ['clm'] });
     expect(llm.providers).toEqual(['openrouter']);

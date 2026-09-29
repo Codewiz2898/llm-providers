@@ -12,7 +12,10 @@ export type LlmErrorKind =
   | 'timeout'
   | 'aborted'
   | 'network'
-  | 'parse';
+  | 'parse'
+  /** The SERVICE refused the caller's app token (docs/GATEWAY.md §4) — distinct from `auth`, which is
+   * a provider refusing the service's key. One is the app's configuration, the other the gateway's. */
+  | 'unauthorized';
 
 export class LlmError extends Error {
   readonly kind: LlmErrorKind;

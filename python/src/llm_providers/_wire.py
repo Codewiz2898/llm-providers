@@ -83,10 +83,14 @@ def completion_result(j: Dict[str, Any]) -> CompletionResult:
     )
 
 
-def system_one_request(target: str, state: Any, questions: Dict[str, Any], timeout_ms: Optional[int]) -> Dict[str, Any]:
+def system_one_request(
+    target: str, state: Any, questions: Dict[str, Any], timeout_ms: Optional[int], label: Optional[str] = None
+) -> Dict[str, Any]:
     body: Dict[str, Any] = {"target": target, "state": state, "questions": questions}
     if timeout_ms is not None:
         body["timeoutMs"] = timeout_ms
+    if label:
+        body["label"] = label
     return body
 
 

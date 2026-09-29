@@ -74,9 +74,9 @@ variable, never written into the file:**
 
 | method | path | body → reply |
 |---|---|---|
-| `GET` | `/health` | → `{ ok, providers: [...], systemOne: [...] }` (names only) |
+| `GET` | `/health` | → `{ ok, providers: [...], systemOne: [...], apps?: [...] }` (names only; open — no token needed) |
 | `POST` | `/v1/complete` | `CompletionRequest` as JSON (no `signal`) → `CompletionResult` |
-| `POST` | `/v1/systemone` | `{ target: "jev" \| "clm" \| <name>, state, questions, timeoutMs? }` → `SystemOneResult` |
+| `POST` | `/v1/systemone` | `{ target: "jev" \| "clm" \| <name>, state, questions, timeoutMs?, label? }` → `SystemOneResult` |
 
 **Errors** come back as `{ "error": { kind, message, provider, model, status? } }`. The HTTP status
 follows from `kind`:
@@ -87,6 +87,7 @@ follows from `kind`:
 | `rate_limit` | 429 |
 | `timeout` | 504 |
 | `aborted` | 499 |
+| `unauthorized` | 401 (the service refused the caller's token — not a provider refusing a key, which is `auth`) |
 | `auth`, `schema_rejected`, `server`, `network`, `parse` | 502 (the upstream failed, not the caller) |
 
 The Python client turns these back into `LlmError` with the same `kind`.
@@ -97,11 +98,16 @@ the request itself).
 
 **Safety:**
 - It binds to `127.0.0.1` unless `--host` says otherwise.
-- `LLM_PROVIDERS_TOKEN` adds bearer auth, and it is **required** for any non-loopback host: the
-  service refuses to start without it.
+- `LLM_PROVIDERS_TOKEN` adds one shared bearer token, and a token is **required** for any
+  non-loopback host: the service refuses to start without one.
+- **As a gateway** (docs/GATEWAY.md §4), the config's `apps` give each app its own token, named by
+  variable (`apps.<id>.tokenEnv`) like a provider key. Every call is labelled with its app, and the
+  app — not the request body — decides the attribution a provider sees. A token that matches no app
+  is `unauthorized`; a call with no token is app `anonymous`, on loopback only, unless
+  `"allowAnonymous": false`. `apps` and `LLM_PROVIDERS_TOKEN` are one or the other.
 - Request bodies are limited to 10 MB. No CORS headers are sent.
-- It logs one line per call to stderr (provider, model, label, ms, warnings, error kind), and never
-  a body or a key.
+- It logs one line per call to stderr (app, provider, model, label, ms, warnings, error kind), and
+  never a body, a key or a token. `onRecord` receives the same record, for telemetry.
 
 ## 4. The Python client
 
