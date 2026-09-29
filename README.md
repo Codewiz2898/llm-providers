@@ -14,7 +14,7 @@ shape from all of them. The design, and the reasoning behind each rule, is in
 
 ## Install
 
-Private, so install from git (the `prepare` script builds `dist/`):
+Not on npm yet, so install from git (the `prepare` script builds `dist/`):
 
 ```bash
 pnpm add github:Codewiz2898/llm-providers
