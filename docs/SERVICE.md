@@ -137,6 +137,24 @@ async with AsyncClient("http://127.0.0.1:8787") as llm: ...
 - **The client's HTTP timeout defaults above the service's own 120 s.** The service reports
   `timeout` precisely, and the client only catches a service that has hung.
 
+## 4b. The TypeScript client: `connectLlm` (added for Jarvis, doc 67)
+
+`connectLlm({ url, token, onCall })` returns the same `Llm` interface as `createLlm`, plus
+`systemOne(target, …)` and `health()`.
+- Model refs pass through; the service routes them.
+- Errors come back with the service's kind, provider, model and status. The service now sends a
+  `detail` field beside `message`, so the rebuilt error doesn't prefix "provider model: kind"
+  twice.
+- An unreachable service is `network`, naming the URL and the command that starts it.
+- Aborting closes the connection, and the service aborts upstream.
+- The HTTP timeout is the call's own timeout plus 10 s of slack, so the service reports a timeout
+  precisely and the client only catches a hung service.
+- `onCall` fires in the caller's process, from the result.
+
+**Missing keys no longer stop the service.** A provider or System One target whose key variable is
+unset is left out and listed at startup as `llm-providers skipped <name>: <VAR> is not set`, by
+variable name, never by value. One config then serves a machine that has only some keys.
+
 ## 5. Testing
 
 | tier | what |

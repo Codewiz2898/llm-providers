@@ -114,7 +114,19 @@ with Client() as llm:
                      messages=[{"role": "user", "content": "order a pepsi"}], max_tokens=4096)
 ```
 
-The client:
+From **TypeScript**, `connectLlm` gives the same `Llm` as `createLlm`, but every call goes to
+the service:
+
+```ts
+import { connectLlm } from 'llm-providers';
+
+const llm = connectLlm({ url: 'http://127.0.0.1:8787', onCall: (e) => metrics(e) });
+await llm.complete({ model: 'openrouter:moonshotai/kimi-k2.7-code', messages, maxTokens: 4096 });
+await llm.systemOne('jev', state, questions);
+await llm.health(); // { providers, systemOne }
+```
+
+The Python client:
 - has a sync `Client` and an async `AsyncClient`;
 - uses Python names, while the service speaks the library's own JSON;
 - raises `LlmError` with the same `kind` as the TypeScript library.
