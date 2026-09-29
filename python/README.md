@@ -23,5 +23,6 @@ with Client() as llm:  # http://127.0.0.1:8787
 ```
 
 `AsyncClient` has the same surface for asyncio. Errors raise `LlmError`, whose `kind` is one of
-`auth`, `rate_limit`, `schema_rejected`, `bad_request`, `server`, `timeout`, `aborted`, `network` or
-`parse`. The design is in `docs/SERVICE.md` at the repository root.
+`auth`, `rate_limit`, `schema_rejected`, `bad_request`, `server`, `timeout`, `aborted`, `network`,
+`parse`, `unauthorized`, `forbidden` or `budget_exceeded`. `budget_exceeded` means the app has spent
+its daily budget on the gateway: do not retry before local midnight. The design is in `docs/SERVICE.md` at the repository root.

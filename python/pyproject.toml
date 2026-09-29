@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "llm-providers"
-version = "0.2.0"
+version = "0.3.0"
 description = "Python client for the llm-providers service: Anthropic, OpenRouter, vLLM, Ollama and System One behind one call."
 readme = "README.md"
 requires-python = ">=3.10"

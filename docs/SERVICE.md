@@ -47,7 +47,9 @@ npx llm-providers serve --config llm.json --port 8787
 ```
 
 **Configuration.** With no `--config`, providers are registered from what the environment has:
-- `anthropic`, if `ANTHROPIC_API_KEY` is set;
+- `anthropic` is listed if `ANTHROPIC_API_KEY` is set, but it stays **off**: Anthropic is served
+  only from a config file whose entry has `"enabled": true` (docs/GATEWAY.md §4). Anthropic
+  reports tokens, not dollars, so its spend cannot count against an app's budget;
 - `openrouter`, if `OPENROUTER_API_KEY` is set;
 - `ollama` at `OLLAMA_URL` (default `http://127.0.0.1:11434`);
 - System One targets `jev` (with the OpenRouter key) and `clm` (at `CLM_URL`, if set).
@@ -61,6 +63,7 @@ variable, never written into the file:**
     "vllm":       { "type": "openai-compatible", "baseUrl": "http://gpu-box:8000/v1",
                     "thinkingOffBody": { "chat_template_kwargs": { "enable_thinking": false } } },
     "openrouter": { "type": "openrouter", "apiKeyEnv": "OPENROUTER_API_KEY", "appName": "Jarvis" },
+    "anthropic":  { "type": "anthropic", "enabled": true },
     "ollama":     { "type": "ollama", "numCtx": 32768 }
   },
   "systemOne": {
@@ -88,6 +91,8 @@ follows from `kind`:
 | `timeout` | 504 |
 | `aborted` | 499 |
 | `unauthorized` | 401 (the service refused the caller's token — not a provider refusing a key, which is `auth`) |
+| `forbidden` | 403 (a provider this caller may not use: Anthropic left off, or an app that has not opted in) |
+| `budget_exceeded` | 429, with `Retry-After` in seconds to local midnight (the app has spent its daily budget; unlike `rate_limit`, retrying sooner cannot help) |
 | `auth`, `schema_rejected`, `server`, `network`, `parse` | 502 (the upstream failed, not the caller) |
 
 The Python client turns these back into `LlmError` with the same `kind`.
@@ -105,6 +110,11 @@ the request itself).
   app — not the request body — decides the attribution a provider sees. A token that matches no app
   is `unauthorized`; a call with no token is app `anonymous`, on loopback only, unless
   `"allowAnonymous": false`. `apps` and `LLM_PROVIDERS_TOKEN` are one or the other.
+- **Anthropic is off by default.** Its provider entry needs `"enabled": true`; on a gateway, each
+  app that may call it also needs `"anthropic": true`. Anything else gets `forbidden`.
+- **Daily budgets.** An app with `"budgetUsdDaily"` is refused (`budget_exceeded`) once today's
+  spend reaches it, until local midnight. Today's spend is kept in `spendFile` so a restart does not
+  reset it.
 - Request bodies are limited to 10 MB. No CORS headers are sent.
 - It logs one line per call to stderr (app, provider, model, label, ms, warnings, error kind), and
   never a body, a key or a token. `onRecord` receives the same record, for telemetry.
