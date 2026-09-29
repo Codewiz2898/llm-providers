@@ -118,7 +118,7 @@ the request itself).
 ## 4. The Python client
 
 - A `python/` directory in this repo. Install it with
-  `pip install "git+ssh://git@github.com/Codewiz2898/llm-providers.git#subdirectory=python"`.
+  `pip install "git+https://github.com/Codewiz2898/llm-providers.git#subdirectory=python"`.
 - Python ≥ 3.10; the only dependency is `httpx`; built with hatchling.
 
 ```python
