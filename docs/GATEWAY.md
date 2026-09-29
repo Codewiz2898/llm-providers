@@ -1,7 +1,7 @@
 # The gateway — one llm-providers service for every app
 
-> Status: **approved 2026-09-29; building.** Step 2 (app identity, per-request attribution) is
-> built and tested. Phase 3 of llm-providers (DESIGN §10), after the service and its clients
+> Status: **approved 2026-09-29; building.** Steps 2 (app identity, per-request attribution) and
+> 3 (telemetry, Python `traceparent`) are built and tested; the library is 0.3.0. Phase 3 of llm-providers (DESIGN §10), after the service and its clients
 > (SERVICE.md). It stacks on #3 (`connectLlm`).
 
 ## 1. Decided (2026-09-29)

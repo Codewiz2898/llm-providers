@@ -70,6 +70,11 @@ export interface CompletionRequest {
    * whatever the app sent, so one app cannot label its calls as another's (docs/GATEWAY.md §4).
    */
   attribution?: { title?: string; url?: string };
+  /**
+   * Gateway only: record this call's prompt and reply TEXT in its telemetry log record — the
+   * per-call opt-in (docs/GATEWAY.md §5). Off by default; an app can opt in wholesale instead.
+   */
+  capture?: boolean;
 }
 
 /** What a provider receives: the model already split off the ref, the timeout already folded into
