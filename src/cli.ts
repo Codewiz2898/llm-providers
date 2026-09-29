@@ -42,6 +42,7 @@ async function main(argv: string[]): Promise<void> {
   process.stderr.write(
     `llm-providers serving on ${svc.url} — providers: ${Object.keys(built.providers).join(', ') || 'none'}; system one: ${Object.keys(built.systemOne).join(', ') || 'none'}\n`,
   );
+  for (const s of built.skipped ?? []) process.stderr.write(`llm-providers skipped ${s.name}: ${s.reason}\n`);
   const stop = () => void svc.close().then(() => process.exit(0));
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);

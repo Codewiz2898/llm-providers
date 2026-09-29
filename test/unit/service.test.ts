@@ -203,9 +203,15 @@ describe('config', () => {
       /apiKeyEnv/,
     );
     expect(() => parseConfig({ providers: { v: { type: 'openai-compatible' } } })).toThrow(/baseUrl/);
-    expect(() =>
-      buildConfig(parseConfig({ providers: { or: { type: 'openrouter', apiKeyEnv: 'MY_OR_KEY' } } }), {}),
-    ).toThrow(/MY_OR_KEY is not set/);
+    // A provider whose key is unset is left out and named by its VARIABLE — not fatal.
+    const built = buildConfig(
+      parseConfig({
+        providers: { or: { type: 'openrouter', apiKeyEnv: 'MY_OR_KEY' }, local: { type: 'ollama' } },
+      }),
+      {},
+    );
+    expect(Object.keys(built.providers)).toEqual(['local']);
+    expect(built.skipped).toEqual([{ name: 'or', reason: 'providers.or: MY_OR_KEY is not set' }]);
   });
 
   it('never hands CLM the OpenRouter key', () => {

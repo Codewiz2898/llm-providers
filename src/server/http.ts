@@ -61,8 +61,26 @@ function send(res: ServerResponse, status: number, body: unknown): void {
   res.end(data);
 }
 
-function errorBody(kind: LlmErrorKind, message: string, provider = 'service', model = '', status?: number) {
-  return { error: { kind, message, provider, model, ...(status !== undefined ? { status } : {}) } };
+/** `detail` is the underlying reason alone, so a client rebuilding the LlmError does not prefix
+ * "provider model: kind" twice; `message` is the whole sentence, for anything that just shows it. */
+function errorBody(
+  kind: LlmErrorKind,
+  message: string,
+  provider = 'service',
+  model = '',
+  status?: number,
+  detail?: string,
+) {
+  return {
+    error: {
+      kind,
+      message,
+      provider,
+      model,
+      ...(status !== undefined ? { status } : {}),
+      ...(detail !== undefined ? { detail } : {}),
+    },
+  };
 }
 
 function authorized(header: string | undefined, token: string): boolean {
@@ -177,7 +195,7 @@ export function createService(built: Built, o: ServiceOptions = {}): Server {
         return send(
           res,
           STATUS_FOR_KIND[e.kind],
-          errorBody(e.kind, e.message, e.provider, e.model, e.status),
+          errorBody(e.kind, e.message, e.provider, e.model, e.status, e.detail),
         );
       }
       send(res, 500, errorBody('server', e instanceof Error ? e.message : String(e)));

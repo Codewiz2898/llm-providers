@@ -37,7 +37,12 @@ export interface ServiceConfig {
 export interface Built {
   providers: Record<string, Provider>;
   systemOne: Record<string, SystemOneTarget>;
+  /** Left out because their key's environment variable is unset — named, never valued. */
+  skipped?: { name: string; reason: string }[];
 }
+
+/** A provider whose key is not in the environment: left out, not fatal (Jarvis doc 67 §5). */
+class MissingKey extends Error {}
 
 type Env = Record<string, string | undefined>;
 
@@ -97,7 +102,11 @@ export function parseConfig(raw: unknown): ServiceConfig {
   return { providers: check('providers', PROVIDER_TYPES), systemOne: check('systemOne', SYSTEM_ONE_TYPES) };
 }
 
-/** The config made real. A named key variable that is unset is an error naming the VARIABLE. */
+/**
+ * The config made real. A provider whose key variable is unset is LEFT OUT and reported in
+ * `skipped` by the variable's NAME — so one config serves a machine that has only some keys, and
+ * an absent Anthropic key just means no `anthropic` in /health.
+ */
 export function buildConfig(c: ServiceConfig, env: Env): Built {
   const key = (
     where: string,
@@ -107,62 +116,72 @@ export function buildConfig(c: ServiceConfig, env: Env): Built {
   ): string | undefined => {
     const name = apiKeyEnv ?? DEFAULT_KEY_ENV[type];
     const value = name ? env[name] : undefined;
-    if (required && !value)
-      throw new ConfigError(`${where}: the environment variable ${name ?? '(none named)'} is not set`);
+    if (required && !value) throw new MissingKey(`${where}: ${name ?? '(no key variable named)'} is not set`);
     return value || undefined;
   };
+  const skipped: { name: string; reason: string }[] = [];
+  const guarded = (name: string, make: () => void) => {
+    try {
+      make();
+    } catch (e) {
+      if (!(e instanceof MissingKey)) throw e;
+      skipped.push({ name, reason: e.message });
+    }
+  };
   const providers: Record<string, Provider> = {};
-  for (const [name, p] of Object.entries(c.providers)) {
-    const where = `providers.${name}`;
-    if (p.type === 'anthropic') {
-      const apiKey = key(where, p.type, p.apiKeyEnv, true);
-      providers[name] = anthropic({
-        ...(apiKey ? { apiKey } : {}),
-        ...(p.baseURL ? { baseURL: p.baseURL } : {}),
-      });
-    } else if (p.type === 'openrouter') {
-      providers[name] = openrouter({
-        apiKey: key(where, p.type, p.apiKeyEnv, true) as string,
-        ...(p.appName ? { appName: p.appName } : {}),
-        ...(p.appUrl ? { appUrl: p.appUrl } : {}),
-        ...(p.baseUrl ? { baseUrl: p.baseUrl } : {}),
-      });
-    } else if (p.type === 'openai-compatible') {
-      const apiKey = p.apiKeyEnv ? key(where, p.type, p.apiKeyEnv, true) : undefined;
-      providers[name] = openaiCompatible({
-        id: name,
-        baseUrl: p.baseUrl,
-        ...(apiKey ? { apiKey } : {}),
-        ...(p.headers ? { headers: p.headers } : {}),
-        ...(p.extraBody ? { extraBody: p.extraBody } : {}),
-        ...(p.thinkingOffBody ? { thinkingOffBody: p.thinkingOffBody } : {}),
-      });
-    } else {
-      providers[name] = ollama({
-        ...(p.baseUrl ? { baseUrl: p.baseUrl } : {}),
-        ...(p.numCtx ? { numCtx: p.numCtx } : {}),
-        ...(p.keepAlive ? { keepAlive: p.keepAlive } : {}),
-      });
-    }
-  }
+  for (const [name, p] of Object.entries(c.providers))
+    guarded(name, () => {
+      const where = `providers.${name}`;
+      if (p.type === 'anthropic') {
+        const apiKey = key(where, p.type, p.apiKeyEnv, true);
+        providers[name] = anthropic({
+          ...(apiKey ? { apiKey } : {}),
+          ...(p.baseURL ? { baseURL: p.baseURL } : {}),
+        });
+      } else if (p.type === 'openrouter') {
+        providers[name] = openrouter({
+          apiKey: key(where, p.type, p.apiKeyEnv, true) as string,
+          ...(p.appName ? { appName: p.appName } : {}),
+          ...(p.appUrl ? { appUrl: p.appUrl } : {}),
+          ...(p.baseUrl ? { baseUrl: p.baseUrl } : {}),
+        });
+      } else if (p.type === 'openai-compatible') {
+        const apiKey = p.apiKeyEnv ? key(where, p.type, p.apiKeyEnv, true) : undefined;
+        providers[name] = openaiCompatible({
+          id: name,
+          baseUrl: p.baseUrl,
+          ...(apiKey ? { apiKey } : {}),
+          ...(p.headers ? { headers: p.headers } : {}),
+          ...(p.extraBody ? { extraBody: p.extraBody } : {}),
+          ...(p.thinkingOffBody ? { thinkingOffBody: p.thinkingOffBody } : {}),
+        });
+      } else {
+        providers[name] = ollama({
+          ...(p.baseUrl ? { baseUrl: p.baseUrl } : {}),
+          ...(p.numCtx ? { numCtx: p.numCtx } : {}),
+          ...(p.keepAlive ? { keepAlive: p.keepAlive } : {}),
+        });
+      }
+    });
   const systemOne: Record<string, SystemOneTarget> = {};
-  for (const [name, s] of Object.entries(c.systemOne)) {
-    const where = `systemOne.${name}`;
-    if (s.type === 'jev') {
-      systemOne[name] = jev({
-        apiKey: key(where, s.type, s.apiKeyEnv, true) as string,
-        ...(s.model ? { model: s.model } : {}),
-        ...(s.url ? { url: s.url } : {}),
-      });
-    } else {
-      // CLM's OWN key, only when named — never the OpenRouter key by default.
-      const apiKey = s.apiKeyEnv ? key(where, s.type, s.apiKeyEnv, true) : undefined;
-      systemOne[name] = clm({
-        ...(s.url ? { url: s.url } : {}),
-        ...(s.model ? { model: s.model } : {}),
-        ...(apiKey ? { apiKey } : {}),
-      });
-    }
-  }
-  return { providers, systemOne };
+  for (const [name, s] of Object.entries(c.systemOne))
+    guarded(name, () => {
+      const where = `systemOne.${name}`;
+      if (s.type === 'jev') {
+        systemOne[name] = jev({
+          apiKey: key(where, s.type, s.apiKeyEnv, true) as string,
+          ...(s.model ? { model: s.model } : {}),
+          ...(s.url ? { url: s.url } : {}),
+        });
+      } else {
+        // CLM's OWN key, only when named — never the OpenRouter key by default.
+        const apiKey = s.apiKeyEnv ? key(where, s.type, s.apiKeyEnv, true) : undefined;
+        systemOne[name] = clm({
+          ...(s.url ? { url: s.url } : {}),
+          ...(s.model ? { model: s.model } : {}),
+          ...(apiKey ? { apiKey } : {}),
+        });
+      }
+    });
+  return { providers, systemOne, ...(skipped.length ? { skipped } : {}) };
 }
