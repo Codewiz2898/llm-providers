@@ -7,6 +7,8 @@
  * or, as a gateway, the config's `apps` give each app its own. See docs/SERVICE.md, docs/GATEWAY.md.
  */
 import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { VERSION } from './index.js';
 import { ConfigError, buildConfig, configFromEnv, parseConfig } from './server/config.js';
 import { DEFAULT_PORT, isLoopback, startService } from './server/http.js';
@@ -35,6 +37,13 @@ async function main(argv: string[]): Promise<void> {
   const config = file ? parseConfig(raw) : configFromEnv(process.env);
   const built = buildConfig(config, process.env);
   const port = Number(flag('port') ?? DEFAULT_PORT);
+  const budgets = Object.values(built.apps ?? {}).filter((a) => a.budgetUsdDaily !== undefined);
+  // Only a budget needs the file: without one the service writes nothing to disk.
+  const spendFile =
+    config.spendFile ??
+    (budgets.length
+      ? join(process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'llm-providers', 'spend.json')
+      : undefined);
   // Loaded only when asked for: a service without `telemetry` never loads the OpenTelemetry SDK.
   const telemetry = config.telemetry
     ? await (await import('./server/telemetry.js')).startTelemetry(config.telemetry, VERSION)
@@ -44,6 +53,7 @@ async function main(argv: string[]): Promise<void> {
     ...(flag('host') ? { host: flag('host') as string } : {}),
     ...(process.env.LLM_PROVIDERS_TOKEN ? { token: process.env.LLM_PROVIDERS_TOKEN } : {}),
     ...(telemetry ? { telemetry } : {}),
+    ...(spendFile ? { spendFile } : {}),
   });
   const apps = built.apps
     ? `; apps: ${Object.keys(built.apps).join(', ') || 'none'} (tokenless calls: ${built.allowAnonymous !== false && isLoopback(flag('host') ?? '127.0.0.1') ? 'accepted as anonymous' : 'refused'})`
@@ -52,6 +62,16 @@ async function main(argv: string[]): Promise<void> {
     `llm-providers serving on ${svc.url} — providers: ${Object.keys(built.providers).join(', ') || 'none'}; system one: ${Object.keys(built.systemOne).join(', ') || 'none'}${apps}\n`,
   );
   for (const s of built.skipped ?? []) process.stderr.write(`llm-providers skipped ${s.name}: ${s.reason}\n`);
+  if (built.apps && built.anthropic?.length) {
+    const allowed = Object.values(built.apps).filter((a) => a.anthropic);
+    process.stderr.write(
+      `llm-providers anthropic for: ${allowed.map((a) => a.id).join(', ') || 'no app (apps.<id>.anthropic)'}\n`,
+    );
+  }
+  if (budgets.length)
+    process.stderr.write(
+      `llm-providers daily budgets: ${budgets.map((a) => `${a.id} $${a.budgetUsdDaily}`).join(', ')} — spend kept in ${spendFile}\n`,
+    );
   if (config.telemetry)
     process.stderr.write(
       `llm-providers telemetry → ${config.telemetry.otlpEndpoint} as ${config.telemetry.serviceName ?? 'llm-gateway'}\n`,

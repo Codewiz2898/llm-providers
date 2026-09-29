@@ -2,7 +2,7 @@
 
 > Status: **built and verified live (2026-09-29)** — §11 marks each item with how. Library 0.3.0
 > (#4, #5); the `platform` repo (Codewiz2898/platform); Jarvis on the gateway (its PR stacked on
-> #165). What changed against this design while building is in §14. Phase 3 of llm-providers (DESIGN §10), after the service and its clients
+> #165). What changed against this design while building is in §14; the Anthropic switch and per-app daily budgets (0.4.0) are §15. Phase 3 of llm-providers (DESIGN §10), after the service and its clients
 > (SERVICE.md). It stacks on #3 (`connectLlm`).
 
 ## 1. Decided (2026-09-29)
@@ -60,7 +60,7 @@ file — the same rule as provider keys:
 {
   "providers": {
     "openrouter": { "type": "openrouter" },
-    "anthropic":  { "type": "anthropic" },
+    "anthropic":  { "type": "anthropic", "enabled": true },
     "ollama":     { "type": "ollama", "numCtx": 32768 }
   },
   "systemOne": {
@@ -68,9 +68,9 @@ file — the same rule as provider keys:
     "clm": { "type": "clm", "url": "http://127.0.0.1:8700/v1/systemone" }
   },
   "apps": {
-    "jarvis":        { "tokenEnv": "JARVIS_GATEWAY_TOKEN", "title": "Jarvis" },
-    "sports-follow": { "tokenEnv": "SPORTS_FOLLOW_GATEWAY_TOKEN", "title": "Sports Follow" },
-    "scripts":       { "tokenEnv": "SCRIPTS_GATEWAY_TOKEN", "capturePrompts": true }
+    "jarvis":        { "tokenEnv": "JARVIS_GATEWAY_TOKEN", "title": "Jarvis", "budgetUsdDaily": 5 },
+    "sports-follow": { "tokenEnv": "SPORTS_FOLLOW_GATEWAY_TOKEN", "title": "Sports Follow", "budgetUsdDaily": 1 },
+    "scripts":       { "tokenEnv": "SCRIPTS_GATEWAY_TOKEN", "capturePrompts": true, "anthropic": true }
   },
   "telemetry": { "otlpEndpoint": "http://127.0.0.1:4318", "promptMaxChars": 65536 }
 }
@@ -87,6 +87,13 @@ file — the same rule as provider keys:
   each request, so OpenRouter's own activity page splits by app too. That is one library change:
   the OpenRouter provider's app name becomes per-request.
 - **`/health` stays open** (names only, no secrets); everything else needs a token.
+- **Anthropic is off by default, at two levels** (§15). The provider entry needs
+  `"enabled": true`, or no app can call it. Then each app that may call it needs
+  `"anthropic": true`. Other apps, and tokenless calls, get `403 forbidden`. Without `apps`,
+  `"enabled": true` alone serves it.
+- **A daily budget per app** (§15). `"budgetUsdDaily": 5` refuses the app's calls with `429
+  budget_exceeded` once it has spent $5 today, until local midnight (`Retry-After` says how long).
+  An app without one is unlimited.
 
 ## 5. Observability
 
@@ -177,8 +184,7 @@ The agent runs
 
 | deferred | seam |
 |---|---|
-| Per-app daily budgets on actual cost | `apps.<id>.budgetUsdDaily`; the gateway already sums `llm_cost_usd_total` per app. Would replace Jarvis's estimate-based ledger. |
-| Anthropic cost (Anthropic reports tokens, not dollars) | a price table in config → `llm_cost_usd_total` for providers that do not report it |
+| Anthropic cost (Anthropic reports tokens, not dollars) | a price table in config → `llm_cost_usd_total` for providers that do not report it, and Anthropic spend counted against budgets. Until then Anthropic is off by default (§15). |
 | Per-app model allowlists and rate limits | `apps.<id>.models`, `apps.<id>.rpm` |
 | Hosting off this Mac | a TLS front; `--host` already refuses to start without tokens |
 | Response caching | a gateway concern, keyed by request hash — only if a real app needs it |
@@ -268,3 +274,29 @@ The agent runs
   renamed in place, values unchanged (checked by hash).
 - **The Grafana stack reuses Jarvis's data volume** (`newchat_newchat-otel-data`), so its history
   carried over.
+
+## 15. The Anthropic switch and daily budgets (0.4.0)
+
+Per-app budgets were deferred in §9 and are built now, with a switch that keeps Anthropic out
+unless you let it in. They go together: **a budget can only count cost a provider reports.**
+OpenRouter and Jev report dollars. Ollama and CLM are free. Anthropic reports tokens only, so an
+Anthropic call would never count against a budget. Anthropic therefore stays off until you choose
+to allow that spend.
+
+| setting | where | default | effect |
+|---|---|---|---|
+| `"enabled": true` | `providers.<name>` (type `anthropic` only) | off | Off: left out before its key is read, named at startup (`skipped anthropic: …`), and a call to it is `403 forbidden`. |
+| `"anthropic": true` | `apps.<id>` | off | This app may call an enabled Anthropic provider. Tokenless (`anonymous`) calls never may. |
+| `"budgetUsdDaily": 5` | `apps.<id>` | none | Once today's spend reaches it, every call from the app, completion or System One, is `429 budget_exceeded` until local midnight. |
+| `"spendFile"` | top level | `$XDG_STATE_HOME/llm-providers/spend.json` (else `~/.local/state/…`) | Today's spend per app. It is rewritten after each costed call, so a crash or restart does not reset a budget. |
+
+- **The check comes before the call, and the cost is known only after it.** The call that crosses
+  the line completes, and so does anything already in flight. An app can end the day a few calls
+  over its budget, never more.
+- **A refusal is a call record**, unlike a refused token. It shows on the dashboard under its
+  `outcome` (`forbidden`, `budget_exceeded`), and has a span.
+- **The day is the gateway machine's local day.** The spend file holds only today. On startup, a
+  file from an earlier day is ignored. An unreadable file is logged and today starts at $0, so the
+  gateway still starts.
+- **Deploying 0.4.0 turns Anthropic off** on a gateway whose config does not add `"enabled": true`.
+  No app called Anthropic when this was built (2026-09-29).

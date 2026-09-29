@@ -76,7 +76,9 @@ a tool result.
 | `tool_args_unparsed` | A tool call's arguments were not JSON. |
 
 **Errors** are `LlmError` with a `kind`: `auth`, `rate_limit`, `schema_rejected`, `bad_request`,
-`server`, `timeout`, `aborted`, `network` or `parse`. Messages never carry a key.
+`server`, `timeout`, `aborted`, `network` or `parse`. Through the service there are three more:
+`unauthorized`, `forbidden` and `budget_exceeded` ([docs/SERVICE.md](docs/SERVICE.md)). Messages
+never carry a key.
 
 ## System One
 
@@ -101,6 +103,10 @@ Run the library as a local service. It holds the keys; callers never do.
 npx llm-providers serve                        # 127.0.0.1:8787, providers from the environment
 npx llm-providers serve --config llm.json      # add vLLM servers etc.; keys by env-var NAME only
 ```
+
+The service serves Anthropic only when its config entry has `"enabled": true`, and a gateway also
+needs each app to opt in. A gateway app can have a daily spend limit (`budgetUsdDaily`).
+[docs/GATEWAY.md](docs/GATEWAY.md) §4 has both.
 
 ```bash
 pip install "git+https://github.com/Codewiz2898/llm-providers.git#subdirectory=python"

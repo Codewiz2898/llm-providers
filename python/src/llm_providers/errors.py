@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-#: auth, rate_limit, schema_rejected, bad_request, server, timeout, aborted, network, parse, unauthorized
-#: (``unauthorized``: the SERVICE refused this app's token; ``auth``: a provider refused the service's key)
+#: auth, rate_limit, schema_rejected, bad_request, server, timeout, aborted, network, parse, unauthorized,
+#: forbidden, budget_exceeded
+#: (``unauthorized``: the SERVICE refused this app's token; ``auth``: a provider refused the service's key;
+#: ``forbidden``: the gateway does not let this app use that provider; ``budget_exceeded``: the app has
+#: spent its daily budget — retrying before local midnight cannot help)
 KINDS = frozenset(
     {
         "auth",
@@ -18,6 +21,8 @@ KINDS = frozenset(
         "network",
         "parse",
         "unauthorized",
+        "forbidden",
+        "budget_exceeded",
     }
 )
 

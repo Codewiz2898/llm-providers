@@ -67,6 +67,8 @@ const KINDS = new Set<LlmErrorKind>([
   'network',
   'parse',
   'unauthorized',
+  'forbidden',
+  'budget_exceeded',
 ]);
 
 export function connectLlm(o: ConnectOptions = {}): RemoteLlm {

@@ -13,7 +13,9 @@ import { type SystemOneTarget, clm, jev } from '../systemOne/index.js';
 import type { Provider } from '../types.js';
 
 export type ProviderConfig =
-  | { type: 'anthropic'; apiKeyEnv?: string; baseURL?: string }
+  /** Off unless `enabled: true`: Anthropic reports tokens, not dollars, so its spend is invisible to
+   * app budgets (docs/GATEWAY.md §4). On a gateway, each app must also opt in (`apps.<id>.anthropic`). */
+  | { type: 'anthropic'; apiKeyEnv?: string; baseURL?: string; enabled?: boolean }
   | { type: 'openrouter'; apiKeyEnv?: string; appName?: string; appUrl?: string; baseUrl?: string }
   | {
       type: 'openai-compatible';
@@ -41,6 +43,11 @@ export interface AppConfig {
   url?: string;
   /** Record prompt and reply text for this app's calls (telemetry, opt-in). */
   capturePrompts?: boolean;
+  /** May call Anthropic providers (which must also be `enabled`). Default false. */
+  anthropic?: boolean;
+  /** US dollars per local day. Once spent, the app's calls are refused as `budget_exceeded` until
+   * midnight. Counts the cost providers report — OpenRouter and Jev; not Anthropic. Default: none. */
+  budgetUsdDaily?: number;
 }
 
 /** OpenTelemetry export (docs/GATEWAY.md §5). Absent: no telemetry, and none of its code loaded. */
@@ -63,6 +70,9 @@ export interface ServiceConfig {
   /** With `apps`: accept a call with NO token, on loopback only, as app `anonymous`. Default true. */
   allowAnonymous?: boolean;
   telemetry?: TelemetryConfig;
+  /** Where today's spend per app is kept across restarts. Default (the CLI, when an app has a
+   * budget): `$XDG_STATE_HOME/llm-providers/spend.json`, else `~/.local/state/…`. */
+  spendFile?: string;
 }
 
 /** An app, made real: its token resolved from the environment. */
@@ -72,6 +82,8 @@ export interface App {
   title: string;
   url?: string;
   capturePrompts: boolean;
+  anthropic: boolean;
+  budgetUsdDaily?: number;
 }
 
 export interface Built {
@@ -82,6 +94,10 @@ export interface Built {
   /** Present only when the config names apps. */
   apps?: Record<string, App>;
   allowAnonymous?: boolean;
+  /** Anthropic providers that are on — served only to apps with `anthropic: true`, when there are apps. */
+  anthropic?: string[];
+  /** Anthropic providers left off (no `enabled: true`): a call to one is `forbidden`, not unknown. */
+  disabled?: string[];
 }
 
 /** The label for a call that carried no app token. */
@@ -102,7 +118,8 @@ export class ConfigError extends Error {
   }
 }
 
-/** No file: serve whatever the environment has keys for, plus a local Ollama. */
+/** No file: serve whatever the environment has keys for, plus a local Ollama. Anthropic is listed
+ * but stays off — turning it on takes a config file (`"enabled": true`). */
 export function configFromEnv(env: Env): ServiceConfig {
   const providers: Record<string, ProviderConfig> = {};
   const systemOne: Record<string, SystemOneConfig> = {};
@@ -141,6 +158,11 @@ export function parseConfig(raw: unknown): ServiceConfig {
         throw new ConfigError(
           `${section}.${name}: keys never go in the config file — put the key in the environment and name the variable with "apiKeyEnv"`,
         );
+      // Only Anthropic can be switched off; on anything else "enabled": false would be ignored.
+      if (c.enabled !== undefined && (c.type !== 'anthropic' || typeof c.enabled !== 'boolean'))
+        throw new ConfigError(
+          `${section}.${name}: "enabled" is for an anthropic provider, and must be true or false — to turn anything else off, remove its entry`,
+        );
       if (c.type === 'openai-compatible' && typeof c.baseUrl !== 'string')
         throw new ConfigError(
           `${section}.${name}: an openai-compatible server needs "baseUrl" (up to and including /v1)`,
@@ -166,12 +188,18 @@ export function parseConfig(raw: unknown): ServiceConfig {
       for (const f of ['title', 'url'] as const)
         if (a[f] !== undefined && typeof a[f] !== 'string')
           throw new ConfigError(`apps.${id}: "${f}" must be a string`);
-      if (a.capturePrompts !== undefined && typeof a.capturePrompts !== 'boolean')
-        throw new ConfigError(`apps.${id}: "capturePrompts" must be true or false`);
+      for (const f of ['capturePrompts', 'anthropic'] as const)
+        if (a[f] !== undefined && typeof a[f] !== 'boolean')
+          throw new ConfigError(`apps.${id}: "${f}" must be true or false`);
+      const b = a.budgetUsdDaily;
+      if (b !== undefined && !(typeof b === 'number' && Number.isFinite(b) && b > 0))
+        throw new ConfigError(`apps.${id}: "budgetUsdDaily" must be a positive number of US dollars`);
     }
   }
   if (raw.allowAnonymous !== undefined && typeof raw.allowAnonymous !== 'boolean')
     throw new ConfigError('"allowAnonymous" must be true or false');
+  if (raw.spendFile !== undefined && (typeof raw.spendFile !== 'string' || !raw.spendFile))
+    throw new ConfigError('"spendFile" must be a file path');
   const t = raw.telemetry;
   if (t !== undefined) {
     if (!isRecord(t) || typeof t.otlpEndpoint !== 'string' || !/^https?:\/\/[^/]/.test(t.otlpEndpoint))
@@ -190,13 +218,15 @@ export function parseConfig(raw: unknown): ServiceConfig {
     ...(apps !== undefined ? { apps: apps as Record<string, AppConfig> } : {}),
     ...(raw.allowAnonymous !== undefined ? { allowAnonymous: raw.allowAnonymous as boolean } : {}),
     ...(t !== undefined ? { telemetry: t as unknown as TelemetryConfig } : {}),
+    ...(raw.spendFile !== undefined ? { spendFile: raw.spendFile as string } : {}),
   };
 }
 
 /**
  * The config made real. A provider whose key variable is unset is LEFT OUT and reported in
  * `skipped` by the variable's NAME — so one config serves a machine that has only some keys, and
- * an absent Anthropic key just means no `anthropic` in /health.
+ * an absent Anthropic key just means no `anthropic` in /health. An Anthropic provider without
+ * `enabled: true` is left out the same way, before its key is read.
  */
 export function buildConfig(c: ServiceConfig, env: Env): Built {
   const key = (
@@ -220,15 +250,24 @@ export function buildConfig(c: ServiceConfig, env: Env): Built {
     }
   };
   const providers: Record<string, Provider> = {};
+  const anthropicOn: string[] = [];
+  const disabled: string[] = [];
   for (const [name, p] of Object.entries(c.providers))
     guarded(name, () => {
       const where = `providers.${name}`;
       if (p.type === 'anthropic') {
+        if (p.enabled !== true) {
+          // Checked before the key, so an off provider never reads it.
+          disabled.push(name);
+          skipped.push({ name, reason: `${where}: Anthropic is off unless its entry has "enabled": true` });
+          return;
+        }
         const apiKey = key(where, p.type, p.apiKeyEnv, true);
         providers[name] = anthropic({
           ...(apiKey ? { apiKey } : {}),
           ...(p.baseURL ? { baseURL: p.baseURL } : {}),
         });
+        anthropicOn.push(name);
       } else if (p.type === 'openrouter') {
         providers[name] = openrouter({
           apiKey: key(where, p.type, p.apiKeyEnv, true) as string,
@@ -298,6 +337,8 @@ export function buildConfig(c: ServiceConfig, env: Env): Built {
           title: a.title ?? id,
           ...(a.url ? { url: a.url } : {}),
           capturePrompts: a.capturePrompts ?? false,
+          anthropic: a.anthropic ?? false,
+          ...(a.budgetUsdDaily !== undefined ? { budgetUsdDaily: a.budgetUsdDaily } : {}),
         };
       });
   }
@@ -306,5 +347,7 @@ export function buildConfig(c: ServiceConfig, env: Env): Built {
     systemOne,
     ...(skipped.length ? { skipped } : {}),
     ...(apps ? { apps, allowAnonymous: c.allowAnonymous ?? true } : {}),
+    ...(anthropicOn.length ? { anthropic: anthropicOn } : {}),
+    ...(disabled.length ? { disabled } : {}),
   };
 }
