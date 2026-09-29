@@ -9,7 +9,9 @@
  *   - it binds to loopback, and will not listen anywhere else without a token;
  *   - one record per call — never a body, never a key — as a log line and to `onRecord`;
  *   - with `apps` (docs/GATEWAY.md §4), every call is labelled with the app whose token it carried,
- *     and the app — not the caller's body — decides the attribution a provider sees.
+ *     and the app — not the caller's body — decides the attribution a provider sees;
+ *   - Anthropic is served only when switched on, and on a gateway only to apps that opt in; an app
+ *     with a daily budget is refused once it has spent it.
  */
 import { timingSafeEqual } from 'node:crypto';
 import {
@@ -20,10 +22,11 @@ import {
   createServer,
 } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { createLlm } from '../client.js';
+import { createLlm, parseModelRef } from '../client.js';
 import { LlmError, type LlmErrorKind } from '../errors.js';
 import { askSystemOne } from '../systemOne/index.js';
 import type { CompletionRequest, Finish, Usage, Warning } from '../types.js';
+import { createSpendLedger } from './budget.js';
 import { ANONYMOUS, type App, type Built, ConfigError } from './config.js';
 
 export const DEFAULT_PORT = 8787;
@@ -42,6 +45,8 @@ export const STATUS_FOR_KIND: Record<LlmErrorKind, number> = {
   network: 502,
   parse: 502,
   unauthorized: 401,
+  forbidden: 403,
+  budget_exceeded: 429,
 };
 
 export interface ServiceOptions {
@@ -59,6 +64,8 @@ export interface ServiceOptions {
   onRecord?: (r: CallRecord) => void;
   /** Spans, metrics and log records (server/telemetry.ts). Absent: none, and no OTel loaded. */
   telemetry?: ServiceTelemetry;
+  /** Where today's spend per app is kept across restarts (server/budget.ts). Absent: memory only. */
+  spendFile?: string;
 }
 
 /**
@@ -118,10 +125,19 @@ class HttpError extends Error {
   }
 }
 
-function send(res: ServerResponse, status: number, body: unknown): void {
+function send(
+  res: ServerResponse,
+  status: number,
+  body: unknown,
+  headers: Record<string, string> = {},
+): void {
   if (res.writableEnded || res.destroyed) return;
   const data = JSON.stringify(body);
-  res.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) });
+  res.writeHead(status, {
+    'content-type': 'application/json',
+    'content-length': Buffer.byteLength(data),
+    ...headers,
+  });
   res.end(data);
 }
 
@@ -191,6 +207,10 @@ export function createService(built: Built, o: ServiceOptions = {}): Server {
     );
   // Tokenless calls are only ever loopback, and only if the config allows them.
   const anonymousOk = Boolean(built.allowAnonymous ?? true) && LOOPBACK.has(o.host ?? '127.0.0.1');
+  const anthropicOn = new Set(built.anthropic ?? []);
+  const disabled = new Set(built.disabled ?? []);
+  const spend = createSpendLedger({ ...(o.spendFile ? { file: o.spendFile } : {}), warn: log });
+  const usd = (n: number) => `$${Number(n.toFixed(4))}`;
 
   const record = (r: CallRecord, span?: unknown, captured?: Captured) => {
     const line =
@@ -198,6 +218,8 @@ export function createService(built: Built, o: ServiceOptions = {}): Server {
         ? `llm-providers call ${fmt({ app: r.app, provider: r.provider, model: r.model, label: r.label, ms: r.ms, ok: r.ok, finish: r.finish, warnings: r.warnings, error: r.error?.kind })}`
         : `llm-providers system-one ${fmt({ app: r.app, target: r.provider, model: r.model, label: r.label, ms: r.ms, ok: r.ok, error: r.error?.kind })}`;
     log(line);
+    if (r.usage?.costUsd && built.apps?.[r.app]?.budgetUsdDaily !== undefined)
+      spend.add(r.app, r.usage.costUsd);
     try {
       o.onRecord?.(r);
       o.telemetry?.record(r, span, captured);
@@ -222,6 +244,41 @@ export function createService(built: Built, o: ServiceOptions = {}): Server {
       t.inflight(appId, -1);
     }
   };
+
+  /** Anthropic only when switched on, and on a gateway only for an app that opted in. */
+  function mayUse(app: App | undefined, provider: string, model: string): void {
+    if (disabled.has(provider))
+      throw new LlmError({
+        kind: 'forbidden',
+        provider,
+        model,
+        detail: `${provider} is off on this service; its entry (providers.${provider}) needs "enabled": true`,
+      });
+    if (apps && anthropicOn.has(provider) && !app?.anthropic)
+      throw new LlmError({
+        kind: 'forbidden',
+        provider,
+        model,
+        detail: app
+          ? `app "${app.id}" may not call ${provider}; set apps.${app.id}.anthropic to true`
+          : `a tokenless call may not call ${provider}; call as an app with "anthropic": true`,
+      });
+  }
+
+  /** Refused once today's spend reaches the app's budget. The check is BEFORE the call, and a call's
+   * cost is known only after it, so the call that crosses the line still completes. */
+  function withinBudget(app: App | undefined, provider: string, model: string): void {
+    const budget = app?.budgetUsdDaily;
+    if (!app || budget === undefined) return;
+    const spent = spend.spent(app.id);
+    if (spent >= budget)
+      throw new LlmError({
+        kind: 'budget_exceeded',
+        provider,
+        model,
+        detail: `app "${app.id}" has spent ${usd(spent)} of its ${usd(budget)} daily budget; calls resume at local midnight`,
+      });
+  }
 
   /** Who is calling. Throws a 401 for a token that matches no app — never a fallback to anonymous. */
   function identify(req: IncomingMessage): App | undefined {
@@ -294,6 +351,9 @@ export function createService(built: Built, o: ServiceOptions = {}): Server {
       return traced('llm.complete', req, appId, async (span) => {
         const started = Date.now();
         try {
+          const ref = parseModelRef(asked.model);
+          mayUse(app, ref.provider, ref.model);
+          withinBudget(app, ref.provider, ref.model);
           const r = await llm.complete({
             ...asked,
             ...(app ? { attribution: { title: app.title, ...(app.url ? { url: app.url } : {}) } } : {}),
@@ -355,6 +415,7 @@ export function createService(built: Built, o: ServiceOptions = {}): Server {
     return traced('llm.systemone', req, appId, async (span) => {
       const started = Date.now();
       try {
+        withinBudget(app, String(name), target.model);
         const r = await askSystemOne(target, body.state, body.questions as never, {
           signal: ac.signal,
           ...(typeof body.timeoutMs === 'number' ? { timeoutMs: body.timeoutMs } : {}),
@@ -405,6 +466,7 @@ export function createService(built: Built, o: ServiceOptions = {}): Server {
           res,
           STATUS_FOR_KIND[e.kind],
           errorBody(e.kind, e.message, e.provider, e.model, e.status, e.detail),
+          e.kind === 'budget_exceeded' ? { 'retry-after': String(spend.secondsToReset()) } : {},
         );
       }
       send(res, 500, errorBody('server', e instanceof Error ? e.message : String(e)));

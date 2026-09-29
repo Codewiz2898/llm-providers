@@ -15,7 +15,12 @@ export type LlmErrorKind =
   | 'parse'
   /** The SERVICE refused the caller's app token (docs/GATEWAY.md §4) — distinct from `auth`, which is
    * a provider refusing the service's key. One is the app's configuration, the other the gateway's. */
-  | 'unauthorized';
+  | 'unauthorized'
+  /** The gateway does not let this app use this provider — Anthropic unless enabled (GATEWAY.md §4). */
+  | 'forbidden'
+  /** The app has spent its daily budget; calls resume at local midnight. Not a `rate_limit`: retrying
+   * sooner cannot help. */
+  | 'budget_exceeded';
 
 export class LlmError extends Error {
   readonly kind: LlmErrorKind;

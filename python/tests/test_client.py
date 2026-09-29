@@ -95,6 +95,14 @@ def test_the_service_error_body_becomes_an_llm_error_of_the_same_kind():
     assert (e.value.kind, e.value.provider, e.value.status, e.value.http_status) == ("rate_limit", "openrouter", 429, 429)
 
 
+@pytest.mark.parametrize(("kind", "http_status"), [("forbidden", 403), ("budget_exceeded", 429)])
+def test_a_gateway_refusal_keeps_its_kind(kind, http_status):
+    body = {"error": {"kind": kind, "message": "refused", "provider": "anthropic", "model": "m"}}
+    with Client(transport=mock(http_status, body)) as llm, pytest.raises(LlmError) as e:
+        llm.complete(model="anthropic:m", messages=[], max_tokens=10)
+    assert (e.value.kind, e.value.http_status) == (kind, http_status)
+
+
 def test_an_unreachable_service_and_a_client_timeout_are_named():
     def refuse(_):
         raise httpx.ConnectError("connection refused")
