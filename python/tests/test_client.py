@@ -139,3 +139,49 @@ def test_the_async_client_has_the_same_surface():
 
     r = asyncio.run(go())
     assert r.json == {"action": "act"} and r.tool_calls[0].name == "search"
+
+
+def test_capture_is_sent_only_when_asked():
+    seen = []
+    with Client("http://svc", transport=mock(seen=seen)) as llm:
+        llm.complete(model="p:m", messages=[{"role": "user", "content": "x"}], max_tokens=5)
+        llm.complete(model="p:m", messages=[{"role": "user", "content": "x"}], max_tokens=5, capture=True)
+    first, second = (json.loads(r.content) for r in seen)
+    assert "capture" not in first
+    assert second["capture"] is True
+
+
+def test_the_callers_trace_travels_as_traceparent_so_the_gateway_span_joins_it():
+    """GATEWAY.md §5 — one trace across the caller and the gateway. OpenTelemetry is optional for
+    the client; this needs the SDK (the dev extra) to make a span to be inside of."""
+    pytest.importorskip("opentelemetry.sdk.trace")
+    from opentelemetry.sdk.trace import TracerProvider
+
+    tracer = TracerProvider().get_tracer("test")
+    seen = []
+    with Client("http://svc", transport=mock(seen=seen)) as llm:
+        llm.complete(model="p:m", messages=[{"role": "user", "content": "x"}], max_tokens=5)
+        with tracer.start_as_current_span("turn") as span:
+            llm.complete(model="p:m", messages=[{"role": "user", "content": "x"}], max_tokens=5)
+            trace_id = format(span.get_span_context().trace_id, "032x")
+            span_id = format(span.get_span_context().span_id, "016x")
+    outside, inside = seen
+    assert "traceparent" not in outside.headers  # no active span: nothing is invented
+    # version-traceid-spanid-flags; the flags byte varies by SDK (level 2 adds a "random" bit).
+    assert inside.headers["traceparent"].startswith(f"00-{trace_id}-{span_id}-")
+
+
+def test_the_async_client_sends_the_trace_too():
+    pytest.importorskip("opentelemetry.sdk.trace")
+    from opentelemetry.sdk.trace import TracerProvider
+
+    tracer = TracerProvider().get_tracer("test")
+    seen = []
+
+    async def run():
+        async with AsyncClient("http://svc", transport=mock(seen=seen)) as llm:
+            with tracer.start_as_current_span("turn"):
+                await llm.complete(model="p:m", messages=[{"role": "user", "content": "x"}], max_tokens=5)
+
+    asyncio.run(run())
+    assert seen[0].headers["traceparent"].startswith("00-")

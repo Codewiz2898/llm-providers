@@ -108,7 +108,7 @@ def start_service(tmp: Path, config: dict | None, extra_env: dict | None = None)
     env = {"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", ""), **(extra_env or {})}
     proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=log.open("w"), env=env)
     url = f"http://127.0.0.1:{port}"
-    # /health sits behind the token like every route: it names the providers.
+    # /health is open (names only); the token is sent anyway, as a client would.
     token = (extra_env or {}).get("LLM_PROVIDERS_TOKEN")
     auth = {"authorization": f"Bearer {token}"} if token else {}
     for _ in range(100):

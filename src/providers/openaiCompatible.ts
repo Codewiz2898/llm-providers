@@ -19,6 +19,8 @@ export interface OpenAiCompatibleOptions {
   baseUrl: string;
   apiKey?: string;
   headers?: Record<string, string>;
+  /** Per-request headers, merged over `headers` — OpenRouter's per-app attribution. */
+  headersFor?: (req: ProviderRequest) => Record<string, string>;
   /** Merged into every request body — for a server's own knobs (vLLM `guided_json`, etc.). */
   extraBody?: Record<string, unknown>;
   /** OpenRouter only: refuse routes that cannot honour the schema or tools, instead of ignoring them. */
@@ -134,6 +136,7 @@ export function openaiCompatible(o: OpenAiCompatibleOptions): Provider {
         'content-type': 'application/json',
         ...(o.apiKey ? { authorization: `Bearer ${o.apiKey}` } : {}),
         ...o.headers,
+        ...o.headersFor?.(req),
       },
       body: JSON.stringify(body),
     });

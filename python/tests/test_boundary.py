@@ -99,3 +99,33 @@ def test_live_python_to_ollama(tmp_path):
     finally:
         svc.proc.terminate()
         svc.proc.wait(timeout=5)
+
+
+def test_a_gateway_knows_each_app_by_its_token_and_refuses_a_stranger(upstream, tmp_path):
+    """docs/GATEWAY.md §4 — the same service, with apps: each call labelled with its app."""
+    jarvis, sports = "jarvis-token-0123456789", "sports-token-0123456789"
+    svc = start_service(
+        tmp_path,
+        {
+            "providers": {"stub": {"type": "openai-compatible", "baseUrl": f"{upstream.url}/v1"}},
+            "apps": {"jarvis": {"tokenEnv": "JARVIS_TOKEN"}, "sports-follow": {"tokenEnv": "SPORTS_TOKEN"}},
+        },
+        {"JARVIS_TOKEN": jarvis, "SPORTS_TOKEN": sports},
+    )
+    ask = dict(model="stub:json", messages=[{"role": "user", "content": "x"}], max_tokens=5)
+    try:
+        with Client(svc.url) as anon:
+            assert anon.health()["apps"] == ["jarvis", "sports-follow"]  # /health needs no token
+        with Client(svc.url, token=sports) as app:
+            assert app.complete(**ask).text == '{"answer":"yes"}'
+        with Client(svc.url, token="not-a-real-token-at-all") as stranger, pytest.raises(LlmError) as e:
+            stranger.complete(**ask)
+        assert e.value.kind == "unauthorized"
+        assert e.value.http_status == 401
+        time.sleep(0.2)
+        log = svc.log.read_text()
+        assert "app=sports-follow provider=stub" in log
+        assert jarvis not in log and sports not in log  # a token is never logged
+    finally:
+        svc.proc.terminate()
+        svc.proc.wait(timeout=5)

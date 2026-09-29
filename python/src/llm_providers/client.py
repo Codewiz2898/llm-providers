@@ -28,6 +28,21 @@ def _headers(token: Optional[str]) -> Dict[str, str]:
     return {"authorization": f"Bearer {token}"} if token else {}
 
 
+def _trace_headers() -> Dict[str, str]:
+    """The caller's trace context as ``traceparent``, so the gateway's span joins the caller's trace.
+
+    Only when OpenTelemetry is installed and a span is active; otherwise nothing — the client never
+    depends on it.
+    """
+    try:
+        from opentelemetry.propagate import inject
+    except ImportError:
+        return {}
+    carrier: Dict[str, str] = {}
+    inject(carrier)
+    return carrier
+
+
 def _http_timeout(base: float, timeout_ms: Optional[int]) -> float:
     """A call allowed longer than the client's default gets a matching HTTP timeout, plus slack."""
     return max(base, timeout_ms / 1000 + 10) if timeout_ms else base
@@ -66,7 +81,9 @@ class Client:
 
     def _post(self, path: str, body: Dict[str, Any], timeout_ms: Optional[int]) -> Dict[str, Any]:
         try:
-            res = self._http.post(path, json=body, timeout=_http_timeout(self.timeout, timeout_ms))
+            res = self._http.post(
+                path, json=body, timeout=_http_timeout(self.timeout, timeout_ms), headers=_trace_headers()
+            )
         except httpx.TimeoutException as e:
             raise LlmError("timeout", f"no reply from the service within the client timeout ({e})") from e
         except httpx.TransportError as e:
@@ -89,18 +106,25 @@ class Client:
         temperature: Optional[float] = None,
         timeout_ms: Optional[int] = None,
         label: Optional[str] = None,
+        capture: bool = False,
     ) -> CompletionResult:
         body = _wire.completion_request(
             model=model, messages=messages, max_tokens=max_tokens, system=system, schema=schema, tools=tools,
             tool_choice=tool_choice, thinking=thinking, effort=effort, cache_system=cache_system,
-            temperature=temperature, timeout_ms=timeout_ms, label=label,
+            temperature=temperature, timeout_ms=timeout_ms, label=label, capture=capture,
         )  # fmt: skip
         return _wire.completion_result(self._post("/v1/complete", body, timeout_ms))
 
     def system_one(
-        self, target: str, state: Any, questions: Dict[str, Any], *, timeout_ms: Optional[int] = None
+        self,
+        target: str,
+        state: Any,
+        questions: Dict[str, Any],
+        *,
+        timeout_ms: Optional[int] = None,
+        label: Optional[str] = None,
     ) -> SystemOneResult:
-        body = _wire.system_one_request(target, state, questions, timeout_ms)
+        body = _wire.system_one_request(target, state, questions, timeout_ms, label)
         return _wire.system_one_result(self._post("/v1/systemone", body, timeout_ms))
 
     def health(self) -> Dict[str, Any]:
@@ -136,7 +160,9 @@ class AsyncClient:
 
     async def _post(self, path: str, body: Dict[str, Any], timeout_ms: Optional[int]) -> Dict[str, Any]:
         try:
-            res = await self._http.post(path, json=body, timeout=_http_timeout(self.timeout, timeout_ms))
+            res = await self._http.post(
+                path, json=body, timeout=_http_timeout(self.timeout, timeout_ms), headers=_trace_headers()
+            )
         except httpx.TimeoutException as e:
             raise LlmError("timeout", f"no reply from the service within the client timeout ({e})") from e
         except httpx.TransportError as e:
@@ -159,18 +185,25 @@ class AsyncClient:
         temperature: Optional[float] = None,
         timeout_ms: Optional[int] = None,
         label: Optional[str] = None,
+        capture: bool = False,
     ) -> CompletionResult:
         body = _wire.completion_request(
             model=model, messages=messages, max_tokens=max_tokens, system=system, schema=schema, tools=tools,
             tool_choice=tool_choice, thinking=thinking, effort=effort, cache_system=cache_system,
-            temperature=temperature, timeout_ms=timeout_ms, label=label,
+            temperature=temperature, timeout_ms=timeout_ms, label=label, capture=capture,
         )  # fmt: skip
         return _wire.completion_result(await self._post("/v1/complete", body, timeout_ms))
 
     async def system_one(
-        self, target: str, state: Any, questions: Dict[str, Any], *, timeout_ms: Optional[int] = None
+        self,
+        target: str,
+        state: Any,
+        questions: Dict[str, Any],
+        *,
+        timeout_ms: Optional[int] = None,
+        label: Optional[str] = None,
     ) -> SystemOneResult:
-        body = _wire.system_one_request(target, state, questions, timeout_ms)
+        body = _wire.system_one_request(target, state, questions, timeout_ms, label)
         return _wire.system_one_result(await self._post("/v1/systemone", body, timeout_ms))
 
     async def health(self) -> Dict[str, Any]:

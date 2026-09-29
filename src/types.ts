@@ -64,6 +64,17 @@ export interface CompletionRequest {
   signal?: AbortSignal;
   /** What the call is FOR ("decision", "author") — echoed to `onCall`, never sent anywhere. */
   label?: string;
+  /**
+   * Who the call is for, where a provider can show it: OpenRouter lists `title` on its activity page
+   * (`X-Title`) and `url` as the referer. The gateway sets it from the calling app and overrides
+   * whatever the app sent, so one app cannot label its calls as another's (docs/GATEWAY.md §4).
+   */
+  attribution?: { title?: string; url?: string };
+  /**
+   * Gateway only: record this call's prompt and reply TEXT in its telemetry log record — the
+   * per-call opt-in (docs/GATEWAY.md §5). Off by default; an app can opt in wholesale instead.
+   */
+  capture?: boolean;
 }
 
 /** What a provider receives: the model already split off the ref, the timeout already folded into

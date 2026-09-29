@@ -7,19 +7,28 @@
  *   - a CANCEL CROSSES THE BOUNDARY: when the HTTP client goes away, the upstream call is aborted,
  *     so a Python timeout stops the model call rather than leaving it running and billing;
  *   - it binds to loopback, and will not listen anywhere else without a token;
- *   - one log line per call — never a body, never a key.
+ *   - one record per call — never a body, never a key — as a log line and to `onRecord`;
+ *   - with `apps` (docs/GATEWAY.md §4), every call is labelled with the app whose token it carried,
+ *     and the app — not the caller's body — decides the attribution a provider sees.
  */
 import { timingSafeEqual } from 'node:crypto';
-import { type IncomingMessage, type Server, type ServerResponse, createServer } from 'node:http';
+import {
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+  createServer,
+} from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { type CallEvent, createLlm } from '../client.js';
+import { createLlm } from '../client.js';
 import { LlmError, type LlmErrorKind } from '../errors.js';
 import { askSystemOne } from '../systemOne/index.js';
-import type { CompletionRequest } from '../types.js';
-import { type Built, ConfigError } from './config.js';
+import type { CompletionRequest, Finish, Usage, Warning } from '../types.js';
+import { ANONYMOUS, type App, type Built, ConfigError } from './config.js';
 
 export const DEFAULT_PORT = 8787;
 const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost']);
+export const isLoopback = (host: string): boolean => LOOPBACK.has(host);
 
 /** The upstream's failure is a 502 — the caller's request was fine, the model's side was not. */
 export const STATUS_FOR_KIND: Record<LlmErrorKind, number> = {
@@ -32,16 +41,71 @@ export const STATUS_FOR_KIND: Record<LlmErrorKind, number> = {
   server: 502,
   network: 502,
   parse: 502,
+  unauthorized: 401,
 };
 
 export interface ServiceOptions {
   host?: string;
   port?: number;
-  /** Bearer token every request must carry. Required to listen on anything but loopback. */
+  /**
+   * One shared bearer token every request must carry — for a service WITHOUT `apps`. With apps,
+   * each app has its own (config `apps.<id>.tokenEnv`), and this is refused.
+   */
   token?: string;
   maxBodyBytes?: number;
   /** One line per call. Default: stderr. */
   log?: (line: string) => void;
+  /** Every call, once, success or failure — what telemetry is built from. */
+  onRecord?: (r: CallRecord) => void;
+  /** Spans, metrics and log records (server/telemetry.ts). Absent: none, and no OTel loaded. */
+  telemetry?: ServiceTelemetry;
+}
+
+/**
+ * What the service needs from telemetry. Implemented by server/telemetry.ts and loaded only when a
+ * config asks for it, so this file — and everything that imports the library — carries no
+ * OpenTelemetry dependency at run time.
+ */
+export interface ServiceTelemetry {
+  /** Runs one call as a span, a child of the caller's `traceparent` when it sent one. */
+  span<T>(
+    name: 'llm.complete' | 'llm.systemone',
+    headers: IncomingHttpHeaders,
+    run: (span: unknown) => Promise<T>,
+  ): Promise<T>;
+  /** Once per call: its metrics, the span's attributes and status, one log record. */
+  record(r: CallRecord, span: unknown, captured?: Captured): void;
+  /** Calls in progress, per app. */
+  inflight(app: string, delta: 1 | -1): void;
+}
+
+/** A call's text, recorded only when its app or the call itself opted in (docs/GATEWAY.md §5). */
+export interface Captured {
+  system?: string;
+  messages?: unknown;
+  tools?: unknown;
+  reply?: string;
+  toolCalls?: unknown;
+  state?: unknown;
+  questions?: unknown;
+  answers?: unknown;
+}
+
+/** One call through the service: who asked, what answered, how it went. Never a body, never a key. */
+export interface CallRecord {
+  type: 'complete' | 'systemone';
+  /** The app whose token the call carried; `anonymous` without one. */
+  app: string;
+  /** `complete`: the provider; `systemone`: the target's name. */
+  provider: string;
+  model: string;
+  label?: string;
+  ms: number;
+  ok: boolean;
+  finish?: Finish;
+  usage?: Usage;
+  warnings?: Warning[];
+  error?: { kind: LlmErrorKind; message: string };
 }
 
 class HttpError extends Error {
@@ -83,10 +147,12 @@ function errorBody(
   };
 }
 
-function authorized(header: string | undefined, token: string): boolean {
-  const given = Buffer.from(header?.startsWith('Bearer ') ? header.slice(7) : '');
-  const want = Buffer.from(token);
-  return given.length === want.length && timingSafeEqual(given, want);
+const bearer = (header: string | undefined) => (header?.startsWith('Bearer ') ? header.slice(7) : undefined);
+
+function same(given: string, want: string): boolean {
+  const a = Buffer.from(given);
+  const b = Buffer.from(want);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 async function readJson(req: IncomingMessage, max: number): Promise<Record<string, unknown>> {
@@ -117,22 +183,82 @@ const fmt = (fields: Record<string, unknown>) =>
 export function createService(built: Built, o: ServiceOptions = {}): Server {
   const log = o.log ?? ((line: string) => process.stderr.write(`${line}\n`));
   const max = o.maxBodyBytes ?? 10 * 1024 * 1024;
-  const llm = createLlm({
-    providers: built.providers,
-    onCall: (e: CallEvent) =>
-      log(
-        `llm-providers call ${fmt({ provider: e.provider, model: e.model, label: e.label, ms: e.ms, ok: e.ok, finish: e.finish, warnings: e.warnings, error: e.error?.kind })}`,
-      ),
-  });
+  const llm = createLlm({ providers: built.providers });
+  const apps = built.apps ? Object.values(built.apps) : undefined;
+  if (apps && o.token)
+    throw new ConfigError(
+      'a service with "apps" gives each app its own token (apps.<id>.tokenEnv) — unset LLM_PROVIDERS_TOKEN',
+    );
+  // Tokenless calls are only ever loopback, and only if the config allows them.
+  const anonymousOk = Boolean(built.allowAnonymous ?? true) && LOOPBACK.has(o.host ?? '127.0.0.1');
+
+  const record = (r: CallRecord, span?: unknown, captured?: Captured) => {
+    const line =
+      r.type === 'complete'
+        ? `llm-providers call ${fmt({ app: r.app, provider: r.provider, model: r.model, label: r.label, ms: r.ms, ok: r.ok, finish: r.finish, warnings: r.warnings, error: r.error?.kind })}`
+        : `llm-providers system-one ${fmt({ app: r.app, target: r.provider, model: r.model, label: r.label, ms: r.ms, ok: r.ok, error: r.error?.kind })}`;
+    log(line);
+    try {
+      o.onRecord?.(r);
+      o.telemetry?.record(r, span, captured);
+    } catch {
+      // Telemetry must never cost a call.
+    }
+  };
+
+  /** Run one call inside its span, counted in flight — or just run it, without telemetry. */
+  const traced = async <T>(
+    name: 'llm.complete' | 'llm.systemone',
+    req: IncomingMessage,
+    appId: string,
+    run: (span?: unknown) => Promise<T>,
+  ): Promise<T> => {
+    const t = o.telemetry;
+    if (!t) return run();
+    t.inflight(appId, 1);
+    try {
+      return await t.span(name, req.headers, run);
+    } finally {
+      t.inflight(appId, -1);
+    }
+  };
+
+  /** Who is calling. Throws a 401 for a token that matches no app — never a fallback to anonymous. */
+  function identify(req: IncomingMessage): App | undefined {
+    const given = bearer(req.headers.authorization);
+    if (apps) {
+      if (given !== undefined) {
+        // Every app is compared, so the time taken says nothing about which one nearly matched.
+        let found: App | undefined;
+        for (const a of apps) if (same(given, a.token)) found = a;
+        if (found) return found;
+        throw new HttpError(401, 'unauthorized', 'unknown app token');
+      }
+      if (anonymousOk) return undefined;
+      throw new HttpError(
+        401,
+        'unauthorized',
+        'this gateway needs an app token — send "Authorization: Bearer <token>" (apps.<id>.tokenEnv)',
+      );
+    }
+    if (o.token && (given === undefined || !same(given, o.token)))
+      throw new HttpError(401, 'unauthorized', 'missing or wrong bearer token');
+    return undefined;
+  }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (o.token && !authorized(req.headers.authorization, o.token)) {
-      return send(res, 401, errorBody('auth', 'missing or wrong bearer token'));
-    }
     const path = new URL(req.url ?? '/', 'http://service').pathname;
+    // Open: names only, no secrets — so `gateway status` and an app's startup line need no token.
     if (req.method === 'GET' && path === '/health') {
-      return send(res, 200, { ok: true, providers: llm.providers, systemOne: Object.keys(built.systemOne) });
+      return send(res, 200, {
+        ok: true,
+        providers: llm.providers,
+        systemOne: Object.keys(built.systemOne),
+        ...(apps ? { apps: apps.map((a) => a.id) } : {}),
+      });
     }
+    const app = identify(req);
+    const appId = app?.id ?? ANONYMOUS;
     if (req.method !== 'POST' || (path !== '/v1/complete' && path !== '/v1/systemone')) {
       return send(res, 404, errorBody('bad_request', `no route ${req.method} ${path}`));
     }
@@ -155,8 +281,62 @@ export function createService(built: Built, o: ServiceOptions = {}): Server {
           'a completion needs "model" (provider:model), "messages" and "maxTokens"',
         );
       }
-      const r = await llm.complete({ ...(body as unknown as CompletionRequest), signal: ac.signal });
-      return send(res, 200, r);
+      // The APP decides the attribution, never the body: one app must not label its calls as another's.
+      const { attribution: _claimed, capture: askedCapture, ...asked } = body as unknown as CompletionRequest;
+      const label = typeof asked.label === 'string' ? asked.label : undefined;
+      // Prompt text is recorded only on opt-in — the app's, or this call's.
+      const capture = Boolean(o.telemetry && (app?.capturePrompts || askedCapture === true));
+      const prompt = (): Captured => ({
+        ...(asked.system !== undefined ? { system: asked.system } : {}),
+        messages: asked.messages,
+        ...(asked.tools ? { tools: asked.tools } : {}),
+      });
+      return traced('llm.complete', req, appId, async (span) => {
+        const started = Date.now();
+        try {
+          const r = await llm.complete({
+            ...asked,
+            ...(app ? { attribution: { title: app.title, ...(app.url ? { url: app.url } : {}) } } : {}),
+            signal: ac.signal,
+          });
+          record(
+            {
+              type: 'complete',
+              app: appId,
+              provider: r.provider,
+              model: r.model,
+              ...(label ? { label } : {}),
+              ms: r.ms,
+              ok: true,
+              finish: r.finish,
+              usage: r.usage,
+              warnings: r.warnings,
+            },
+            span,
+            capture
+              ? { ...prompt(), reply: r.text, ...(r.toolCalls.length ? { toolCalls: r.toolCalls } : {}) }
+              : undefined,
+          );
+          return send(res, 200, r);
+        } catch (e) {
+          const err = e instanceof LlmError ? e : undefined;
+          record(
+            {
+              type: 'complete',
+              app: appId,
+              provider: err?.provider ?? '?',
+              model: err?.model ?? String(asked.model),
+              ...(label ? { label } : {}),
+              ms: Date.now() - started,
+              ok: false,
+              error: { kind: err?.kind ?? 'server', message: e instanceof Error ? e.message : String(e) },
+            },
+            span,
+            capture ? prompt() : undefined,
+          );
+          throw e;
+        }
+      });
     }
 
     const name = body.target;
@@ -170,22 +350,51 @@ export function createService(built: Built, o: ServiceOptions = {}): Server {
     }
     if (!body.questions || typeof body.questions !== 'object')
       throw new HttpError(400, 'bad_request', 'a System One call needs "questions"');
-    const started = Date.now();
-    try {
-      const r = await askSystemOne(target, body.state, body.questions as never, {
-        signal: ac.signal,
-        ...(typeof body.timeoutMs === 'number' ? { timeoutMs: body.timeoutMs } : {}),
-      });
-      log(
-        `llm-providers system-one ${fmt({ target: name, model: target.model, ms: Date.now() - started, ok: true })}`,
-      );
-      return send(res, 200, r);
-    } catch (e) {
-      log(
-        `llm-providers system-one ${fmt({ target: name, model: target.model, ms: Date.now() - started, ok: false, error: e instanceof LlmError ? e.kind : 'server' })}`,
-      );
-      throw e;
-    }
+    const label = typeof body.label === 'string' ? body.label : undefined;
+    const capture = Boolean(o.telemetry && (app?.capturePrompts || body.capture === true));
+    return traced('llm.systemone', req, appId, async (span) => {
+      const started = Date.now();
+      try {
+        const r = await askSystemOne(target, body.state, body.questions as never, {
+          signal: ac.signal,
+          ...(typeof body.timeoutMs === 'number' ? { timeoutMs: body.timeoutMs } : {}),
+        });
+        record(
+          {
+            type: 'systemone',
+            app: appId,
+            provider: String(name),
+            model: target.model,
+            ...(label ? { label } : {}),
+            ms: Date.now() - started,
+            ok: true,
+            ...(r.costUsd !== undefined ? { usage: { costUsd: r.costUsd } } : {}),
+          },
+          span,
+          capture ? { state: body.state, questions: body.questions, answers: r.answers } : undefined,
+        );
+        return send(res, 200, r);
+      } catch (e) {
+        record(
+          {
+            type: 'systemone',
+            app: appId,
+            provider: String(name),
+            model: target.model,
+            ...(label ? { label } : {}),
+            ms: Date.now() - started,
+            ok: false,
+            error: {
+              kind: e instanceof LlmError ? e.kind : 'server',
+              message: e instanceof Error ? e.message : String(e),
+            },
+          },
+          span,
+          capture ? { state: body.state, questions: body.questions } : undefined,
+        );
+        throw e;
+      }
+    });
   }
 
   return createServer((req, res) => {
@@ -212,9 +421,9 @@ export interface RunningService {
 /** Listen. Refuses a non-loopback host without a token — an open model proxy spends your keys. */
 export async function startService(built: Built, o: ServiceOptions = {}): Promise<RunningService> {
   const host = o.host ?? '127.0.0.1';
-  if (!LOOPBACK.has(host) && !o.token) {
+  if (!LOOPBACK.has(host) && !o.token && !built.apps) {
     throw new ConfigError(
-      `refusing to listen on ${host} without a token — set LLM_PROVIDERS_TOKEN, or keep the default 127.0.0.1`,
+      `refusing to listen on ${host} without tokens — configure "apps" (or set LLM_PROVIDERS_TOKEN), or keep the default 127.0.0.1`,
     );
   }
   const server = createService(built, o);

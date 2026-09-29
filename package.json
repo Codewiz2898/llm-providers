@@ -1,8 +1,8 @@
 {
   "name": "llm-providers",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "One library for calling models, whoever serves them: Anthropic, OpenRouter, OpenAI-compatible servers (vLLM), Ollama — and System One questions (Jev, CLM).",
+  "description": "One library for calling models, whoever serves them: Anthropic, OpenRouter, OpenAI-compatible servers (vLLM), Ollama \u2014 and System One questions (Jev, CLM).",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -10,11 +10,21 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./telemetry": {
+      "types": "./dist/server/telemetry.d.ts",
+      "import": "./dist/server/telemetry.js"
     }
   },
-  "bin": { "llm-providers": "./dist/cli.js" },
-  "files": ["dist"],
-  "engines": { "node": ">=20.3" },
+  "bin": {
+    "llm-providers": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.3"
+  },
   "packageManager": "pnpm@9.7.0",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -25,7 +35,20 @@
     "lint": "biome check src test"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.114.0"
+    "@anthropic-ai/sdk": "^0.114.0",
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/api-logs": "0.221.0",
+    "@opentelemetry/core": "2.10.0",
+    "@opentelemetry/exporter-logs-otlp-http": "0.221.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "0.221.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.221.0",
+    "@opentelemetry/instrumentation": "0.221.0",
+    "@opentelemetry/instrumentation-undici": "0.31.0",
+    "@opentelemetry/resources": "2.10.0",
+    "@opentelemetry/sdk-logs": "0.221.0",
+    "@opentelemetry/sdk-metrics": "2.10.0",
+    "@opentelemetry/sdk-trace-base": "2.10.0",
+    "@opentelemetry/sdk-trace-node": "2.10.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.8.3",

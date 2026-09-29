@@ -24,7 +24,8 @@ export const DEFAULT_SERVICE_URL = 'http://127.0.0.1:8787';
 export interface ConnectOptions {
   /** Default `http://127.0.0.1:8787`. */
   url?: string;
-  /** The service's LLM_PROVIDERS_TOKEN, when it set one. */
+  /** This app's token on a gateway with apps (docs/GATEWAY.md §4), or the service's shared
+   * LLM_PROVIDERS_TOKEN on one without. */
   token?: string;
   onCall?: (e: CallEvent) => void;
   /** A request without `timeoutMs` gets the service's default; this mirrors it for the HTTP timeout. */
@@ -38,6 +39,8 @@ export interface ServiceHealth {
   ok: boolean;
   providers: string[];
   systemOne: string[];
+  /** The apps a gateway knows, when it has any. */
+  apps?: string[];
 }
 
 export interface RemoteLlm extends Llm {
@@ -46,7 +49,8 @@ export interface RemoteLlm extends Llm {
     target: string,
     state: unknown,
     questions: Record<string, SystemOneQuestion>,
-    opts?: { signal?: AbortSignal; timeoutMs?: number },
+    /** `label`: what the question is FOR — shown in the gateway's telemetry, like a completion's. */
+    opts?: { signal?: AbortSignal; timeoutMs?: number; label?: string },
   ): Promise<SystemOneResult>;
   /** What the service serves. Also refreshes `providers`. */
   health(): Promise<ServiceHealth>;
@@ -62,6 +66,7 @@ const KINDS = new Set<LlmErrorKind>([
   'aborted',
   'network',
   'parse',
+  'unauthorized',
 ]);
 
 export function connectLlm(o: ConnectOptions = {}): RemoteLlm {
@@ -188,7 +193,13 @@ export function connectLlm(o: ConnectOptions = {}): RemoteLlm {
       const timeoutMs = opts.timeoutMs ?? 30_000;
       return (await call(
         '/v1/systemone',
-        { target, state, questions, ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}) },
+        {
+          target,
+          state,
+          questions,
+          ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+          ...(opts.label ? { label: opts.label } : {}),
+        },
         { provider: `system-one:${target}`, model: target },
         opts.signal,
         timeoutMs,

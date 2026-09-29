@@ -4,9 +4,21 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-#: auth, rate_limit, schema_rejected, bad_request, server, timeout, aborted, network, parse
+#: auth, rate_limit, schema_rejected, bad_request, server, timeout, aborted, network, parse, unauthorized
+#: (``unauthorized``: the SERVICE refused this app's token; ``auth``: a provider refused the service's key)
 KINDS = frozenset(
-    {"auth", "rate_limit", "schema_rejected", "bad_request", "server", "timeout", "aborted", "network", "parse"}
+    {
+        "auth",
+        "rate_limit",
+        "schema_rejected",
+        "bad_request",
+        "server",
+        "timeout",
+        "aborted",
+        "network",
+        "parse",
+        "unauthorized",
+    }
 )
 
 
