@@ -7,6 +7,7 @@
  * or, as a gateway, the config's `apps` give each app its own. See docs/SERVICE.md, docs/GATEWAY.md.
  */
 import { readFileSync } from 'node:fs';
+import { VERSION } from './index.js';
 import { ConfigError, buildConfig, configFromEnv, parseConfig } from './server/config.js';
 import { DEFAULT_PORT, isLoopback, startService } from './server/http.js';
 
@@ -34,10 +35,15 @@ async function main(argv: string[]): Promise<void> {
   const config = file ? parseConfig(raw) : configFromEnv(process.env);
   const built = buildConfig(config, process.env);
   const port = Number(flag('port') ?? DEFAULT_PORT);
+  // Loaded only when asked for: a service without `telemetry` never loads the OpenTelemetry SDK.
+  const telemetry = config.telemetry
+    ? await (await import('./server/telemetry.js')).startTelemetry(config.telemetry, VERSION)
+    : undefined;
   const svc = await startService(built, {
     port,
     ...(flag('host') ? { host: flag('host') as string } : {}),
     ...(process.env.LLM_PROVIDERS_TOKEN ? { token: process.env.LLM_PROVIDERS_TOKEN } : {}),
+    ...(telemetry ? { telemetry } : {}),
   });
   const apps = built.apps
     ? `; apps: ${Object.keys(built.apps).join(', ') || 'none'} (tokenless calls: ${built.allowAnonymous !== false && isLoopback(flag('host') ?? '127.0.0.1') ? 'accepted as anonymous' : 'refused'})`
@@ -46,7 +52,16 @@ async function main(argv: string[]): Promise<void> {
     `llm-providers serving on ${svc.url} — providers: ${Object.keys(built.providers).join(', ') || 'none'}; system one: ${Object.keys(built.systemOne).join(', ') || 'none'}${apps}\n`,
   );
   for (const s of built.skipped ?? []) process.stderr.write(`llm-providers skipped ${s.name}: ${s.reason}\n`);
-  const stop = () => void svc.close().then(() => process.exit(0));
+  if (config.telemetry)
+    process.stderr.write(
+      `llm-providers telemetry → ${config.telemetry.otlpEndpoint} as ${config.telemetry.serviceName ?? 'llm-gateway'}\n`,
+    );
+  // Flush what telemetry still holds before going — the last calls are the ones you will look for.
+  const stop = () =>
+    void svc
+      .close()
+      .then(() => telemetry?.shutdown())
+      .then(() => process.exit(0));
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
 }

@@ -33,10 +33,26 @@ export type {
   SystemOneResult,
   SystemOneTarget,
 } from './systemOne/index.js';
-export { buildConfig, ConfigError, configFromEnv, parseConfig } from './server/config.js';
-export type { Built, ProviderConfig, ServiceConfig, SystemOneConfig } from './server/config.js';
-export { createService, DEFAULT_PORT, STATUS_FOR_KIND, startService } from './server/http.js';
-export type { RunningService, ServiceOptions } from './server/http.js';
+export { ANONYMOUS, buildConfig, ConfigError, configFromEnv, parseConfig } from './server/config.js';
+export type {
+  App,
+  AppConfig,
+  Built,
+  ProviderConfig,
+  ServiceConfig,
+  SystemOneConfig,
+  TelemetryConfig,
+} from './server/config.js';
+export { createService, DEFAULT_PORT, isLoopback, STATUS_FOR_KIND, startService } from './server/http.js';
+export type {
+  CallRecord,
+  Captured,
+  RunningService,
+  ServiceOptions,
+  ServiceTelemetry,
+} from './server/http.js';
+// The OpenTelemetry implementation is NOT exported here — `llm-providers/telemetry` — so importing
+// the library never loads the SDK.
 export type * from './types.js';
 
-export const VERSION = '0.2.0';
+export const VERSION = '0.3.0';

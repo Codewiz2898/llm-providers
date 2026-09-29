@@ -12,7 +12,13 @@
  *     and the app — not the caller's body — decides the attribution a provider sees.
  */
 import { timingSafeEqual } from 'node:crypto';
-import { type IncomingMessage, type Server, type ServerResponse, createServer } from 'node:http';
+import {
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+  createServer,
+} from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createLlm } from '../client.js';
 import { LlmError, type LlmErrorKind } from '../errors.js';
@@ -51,6 +57,38 @@ export interface ServiceOptions {
   log?: (line: string) => void;
   /** Every call, once, success or failure — what telemetry is built from. */
   onRecord?: (r: CallRecord) => void;
+  /** Spans, metrics and log records (server/telemetry.ts). Absent: none, and no OTel loaded. */
+  telemetry?: ServiceTelemetry;
+}
+
+/**
+ * What the service needs from telemetry. Implemented by server/telemetry.ts and loaded only when a
+ * config asks for it, so this file — and everything that imports the library — carries no
+ * OpenTelemetry dependency at run time.
+ */
+export interface ServiceTelemetry {
+  /** Runs one call as a span, a child of the caller's `traceparent` when it sent one. */
+  span<T>(
+    name: 'llm.complete' | 'llm.systemone',
+    headers: IncomingHttpHeaders,
+    run: (span: unknown) => Promise<T>,
+  ): Promise<T>;
+  /** Once per call: its metrics, the span's attributes and status, one log record. */
+  record(r: CallRecord, span: unknown, captured?: Captured): void;
+  /** Calls in progress, per app. */
+  inflight(app: string, delta: 1 | -1): void;
+}
+
+/** A call's text, recorded only when its app or the call itself opted in (docs/GATEWAY.md §5). */
+export interface Captured {
+  system?: string;
+  messages?: unknown;
+  tools?: unknown;
+  reply?: string;
+  toolCalls?: unknown;
+  state?: unknown;
+  questions?: unknown;
+  answers?: unknown;
 }
 
 /** One call through the service: who asked, what answered, how it went. Never a body, never a key. */
@@ -154,7 +192,7 @@ export function createService(built: Built, o: ServiceOptions = {}): Server {
   // Tokenless calls are only ever loopback, and only if the config allows them.
   const anonymousOk = Boolean(built.allowAnonymous ?? true) && LOOPBACK.has(o.host ?? '127.0.0.1');
 
-  const record = (r: CallRecord) => {
+  const record = (r: CallRecord, span?: unknown, captured?: Captured) => {
     const line =
       r.type === 'complete'
         ? `llm-providers call ${fmt({ app: r.app, provider: r.provider, model: r.model, label: r.label, ms: r.ms, ok: r.ok, finish: r.finish, warnings: r.warnings, error: r.error?.kind })}`
@@ -162,8 +200,26 @@ export function createService(built: Built, o: ServiceOptions = {}): Server {
     log(line);
     try {
       o.onRecord?.(r);
+      o.telemetry?.record(r, span, captured);
     } catch {
       // Telemetry must never cost a call.
+    }
+  };
+
+  /** Run one call inside its span, counted in flight — or just run it, without telemetry. */
+  const traced = async <T>(
+    name: 'llm.complete' | 'llm.systemone',
+    req: IncomingMessage,
+    appId: string,
+    run: (span?: unknown) => Promise<T>,
+  ): Promise<T> => {
+    const t = o.telemetry;
+    if (!t) return run();
+    t.inflight(appId, 1);
+    try {
+      return await t.span(name, req.headers, run);
+    } finally {
+      t.inflight(appId, -1);
     }
   };
 
@@ -226,42 +282,61 @@ export function createService(built: Built, o: ServiceOptions = {}): Server {
         );
       }
       // The APP decides the attribution, never the body: one app must not label its calls as another's.
-      const { attribution: _claimed, ...asked } = body as unknown as CompletionRequest;
+      const { attribution: _claimed, capture: askedCapture, ...asked } = body as unknown as CompletionRequest;
       const label = typeof asked.label === 'string' ? asked.label : undefined;
-      const started = Date.now();
-      try {
-        const r = await llm.complete({
-          ...asked,
-          ...(app ? { attribution: { title: app.title, ...(app.url ? { url: app.url } : {}) } } : {}),
-          signal: ac.signal,
-        });
-        record({
-          type: 'complete',
-          app: appId,
-          provider: r.provider,
-          model: r.model,
-          ...(label ? { label } : {}),
-          ms: r.ms,
-          ok: true,
-          finish: r.finish,
-          usage: r.usage,
-          warnings: r.warnings,
-        });
-        return send(res, 200, r);
-      } catch (e) {
-        const err = e instanceof LlmError ? e : undefined;
-        record({
-          type: 'complete',
-          app: appId,
-          provider: err?.provider ?? '?',
-          model: err?.model ?? String(asked.model),
-          ...(label ? { label } : {}),
-          ms: Date.now() - started,
-          ok: false,
-          error: { kind: err?.kind ?? 'server', message: e instanceof Error ? e.message : String(e) },
-        });
-        throw e;
-      }
+      // Prompt text is recorded only on opt-in — the app's, or this call's.
+      const capture = Boolean(o.telemetry && (app?.capturePrompts || askedCapture === true));
+      const prompt = (): Captured => ({
+        ...(asked.system !== undefined ? { system: asked.system } : {}),
+        messages: asked.messages,
+        ...(asked.tools ? { tools: asked.tools } : {}),
+      });
+      return traced('llm.complete', req, appId, async (span) => {
+        const started = Date.now();
+        try {
+          const r = await llm.complete({
+            ...asked,
+            ...(app ? { attribution: { title: app.title, ...(app.url ? { url: app.url } : {}) } } : {}),
+            signal: ac.signal,
+          });
+          record(
+            {
+              type: 'complete',
+              app: appId,
+              provider: r.provider,
+              model: r.model,
+              ...(label ? { label } : {}),
+              ms: r.ms,
+              ok: true,
+              finish: r.finish,
+              usage: r.usage,
+              warnings: r.warnings,
+            },
+            span,
+            capture
+              ? { ...prompt(), reply: r.text, ...(r.toolCalls.length ? { toolCalls: r.toolCalls } : {}) }
+              : undefined,
+          );
+          return send(res, 200, r);
+        } catch (e) {
+          const err = e instanceof LlmError ? e : undefined;
+          record(
+            {
+              type: 'complete',
+              app: appId,
+              provider: err?.provider ?? '?',
+              model: err?.model ?? String(asked.model),
+              ...(label ? { label } : {}),
+              ms: Date.now() - started,
+              ok: false,
+              error: { kind: err?.kind ?? 'server', message: e instanceof Error ? e.message : String(e) },
+            },
+            span,
+            capture ? prompt() : undefined,
+          );
+          throw e;
+        }
+      });
     }
 
     const name = body.target;
@@ -276,39 +351,50 @@ export function createService(built: Built, o: ServiceOptions = {}): Server {
     if (!body.questions || typeof body.questions !== 'object')
       throw new HttpError(400, 'bad_request', 'a System One call needs "questions"');
     const label = typeof body.label === 'string' ? body.label : undefined;
-    const started = Date.now();
-    try {
-      const r = await askSystemOne(target, body.state, body.questions as never, {
-        signal: ac.signal,
-        ...(typeof body.timeoutMs === 'number' ? { timeoutMs: body.timeoutMs } : {}),
-      });
-      record({
-        type: 'systemone',
-        app: appId,
-        provider: String(name),
-        model: target.model,
-        ...(label ? { label } : {}),
-        ms: Date.now() - started,
-        ok: true,
-        ...(r.costUsd !== undefined ? { usage: { costUsd: r.costUsd } } : {}),
-      });
-      return send(res, 200, r);
-    } catch (e) {
-      record({
-        type: 'systemone',
-        app: appId,
-        provider: String(name),
-        model: target.model,
-        ...(label ? { label } : {}),
-        ms: Date.now() - started,
-        ok: false,
-        error: {
-          kind: e instanceof LlmError ? e.kind : 'server',
-          message: e instanceof Error ? e.message : String(e),
-        },
-      });
-      throw e;
-    }
+    const capture = Boolean(o.telemetry && (app?.capturePrompts || body.capture === true));
+    return traced('llm.systemone', req, appId, async (span) => {
+      const started = Date.now();
+      try {
+        const r = await askSystemOne(target, body.state, body.questions as never, {
+          signal: ac.signal,
+          ...(typeof body.timeoutMs === 'number' ? { timeoutMs: body.timeoutMs } : {}),
+        });
+        record(
+          {
+            type: 'systemone',
+            app: appId,
+            provider: String(name),
+            model: target.model,
+            ...(label ? { label } : {}),
+            ms: Date.now() - started,
+            ok: true,
+            ...(r.costUsd !== undefined ? { usage: { costUsd: r.costUsd } } : {}),
+          },
+          span,
+          capture ? { state: body.state, questions: body.questions, answers: r.answers } : undefined,
+        );
+        return send(res, 200, r);
+      } catch (e) {
+        record(
+          {
+            type: 'systemone',
+            app: appId,
+            provider: String(name),
+            model: target.model,
+            ...(label ? { label } : {}),
+            ms: Date.now() - started,
+            ok: false,
+            error: {
+              kind: e instanceof LlmError ? e.kind : 'server',
+              message: e instanceof Error ? e.message : String(e),
+            },
+          },
+          span,
+          capture ? { state: body.state, questions: body.questions } : undefined,
+        );
+        throw e;
+      }
+    });
   }
 
   return createServer((req, res) => {

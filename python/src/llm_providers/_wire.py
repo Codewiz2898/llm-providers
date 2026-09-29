@@ -45,6 +45,7 @@ def completion_request(
     temperature: Optional[float] = None,
     timeout_ms: Optional[int] = None,
     label: Optional[str] = None,
+    capture: bool = False,
 ) -> Dict[str, Any]:
     body: Dict[str, Any] = {
         "model": model,
@@ -64,6 +65,8 @@ def completion_request(
         "label": label,
     }
     body.update({k: v for k, v in optional.items() if v is not None})
+    if capture:
+        body["capture"] = True  # a gateway records this call's prompt and reply text (GATEWAY.md §5)
     return body
 
 

@@ -43,6 +43,18 @@ export interface AppConfig {
   capturePrompts?: boolean;
 }
 
+/** OpenTelemetry export (docs/GATEWAY.md §5). Absent: no telemetry, and none of its code loaded. */
+export interface TelemetryConfig {
+  /** An OTLP/HTTP collector, e.g. `http://127.0.0.1:4318` — `/v1/traces` etc. are appended. */
+  otlpEndpoint: string;
+  /** Default `llm-gateway`. */
+  serviceName?: string;
+  /** Each captured text field is cut to this. Default 65 536. */
+  promptMaxChars?: number;
+  /** How often metrics are pushed. Default 10 000 ms. */
+  exportIntervalMs?: number;
+}
+
 export interface ServiceConfig {
   providers: Record<string, ProviderConfig>;
   systemOne: Record<string, SystemOneConfig>;
@@ -50,6 +62,7 @@ export interface ServiceConfig {
   apps?: Record<string, AppConfig>;
   /** With `apps`: accept a call with NO token, on loopback only, as app `anonymous`. Default true. */
   allowAnonymous?: boolean;
+  telemetry?: TelemetryConfig;
 }
 
 /** An app, made real: its token resolved from the environment. */
@@ -159,11 +172,24 @@ export function parseConfig(raw: unknown): ServiceConfig {
   }
   if (raw.allowAnonymous !== undefined && typeof raw.allowAnonymous !== 'boolean')
     throw new ConfigError('"allowAnonymous" must be true or false');
+  const t = raw.telemetry;
+  if (t !== undefined) {
+    if (!isRecord(t) || typeof t.otlpEndpoint !== 'string' || !/^https?:\/\/[^/]/.test(t.otlpEndpoint))
+      throw new ConfigError(
+        '"telemetry.otlpEndpoint" must be an OTLP/HTTP collector URL, e.g. http://127.0.0.1:4318',
+      );
+    if (t.serviceName !== undefined && typeof t.serviceName !== 'string')
+      throw new ConfigError('"telemetry.serviceName" must be a string');
+    for (const f of ['promptMaxChars', 'exportIntervalMs'] as const)
+      if (t[f] !== undefined && !(Number.isInteger(t[f]) && (t[f] as number) > 0))
+        throw new ConfigError(`"telemetry.${f}" must be a positive whole number`);
+  }
   return {
     providers: check('providers', PROVIDER_TYPES),
     systemOne: check('systemOne', SYSTEM_ONE_TYPES),
     ...(apps !== undefined ? { apps: apps as Record<string, AppConfig> } : {}),
     ...(raw.allowAnonymous !== undefined ? { allowAnonymous: raw.allowAnonymous as boolean } : {}),
+    ...(t !== undefined ? { telemetry: t as unknown as TelemetryConfig } : {}),
   };
 }
 

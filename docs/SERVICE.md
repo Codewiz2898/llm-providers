@@ -108,6 +108,12 @@ the request itself).
 - Request bodies are limited to 10 MB. No CORS headers are sent.
 - It logs one line per call to stderr (app, provider, model, label, ms, warnings, error kind), and
   never a body, a key or a token. `onRecord` receives the same record, for telemetry.
+- **Telemetry** (docs/GATEWAY.md §5): a config `telemetry` section — `{ "otlpEndpoint":
+  "http://127.0.0.1:4318" }` — exports one span, a set of metric points and one log record per
+  call over OTLP/HTTP, each labelled with the app. A caller's `traceparent` makes the gateway's
+  span its child, and the upstream model call is the gateway span's child. Prompt and reply text
+  are recorded only when the app has `capturePrompts` or the call sends `capture: true`. The SDK is
+  loaded only when the section is present; code reaches it as `llm-providers/telemetry`.
 
 ## 4. The Python client
 
