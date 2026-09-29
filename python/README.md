@@ -6,7 +6,7 @@ holds the API keys; this client never does.
 
 ```bash
 npx llm-providers serve    # in the llm-providers repo, or wherever it is installed
-pip install "git+ssh://git@github.com/Codewiz2898/llm-providers.git#subdirectory=python"
+pip install "git+https://github.com/Codewiz2898/llm-providers.git#subdirectory=python"
 ```
 
 ```python

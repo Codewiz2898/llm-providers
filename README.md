@@ -103,7 +103,7 @@ npx llm-providers serve --config llm.json      # add vLLM servers etc.; keys by 
 ```
 
 ```bash
-pip install "git+ssh://git@github.com/Codewiz2898/llm-providers.git#subdirectory=python"
+pip install "git+https://github.com/Codewiz2898/llm-providers.git#subdirectory=python"
 ```
 
 ```python
