@@ -1,7 +1,8 @@
 # The gateway — one llm-providers service for every app
 
-> Status: **approved 2026-09-29; building.** Steps 2 (app identity, per-request attribution) and
-> 3 (telemetry, Python `traceparent`) are built and tested; the library is 0.3.0. Phase 3 of llm-providers (DESIGN §10), after the service and its clients
+> Status: **built and verified live (2026-09-29)** — §11 marks each item with how. Library 0.3.0
+> (#4, #5); the `platform` repo (Codewiz2898/platform); Jarvis on the gateway (its PR stacked on
+> #165). What changed against this design while building is in §14. Phase 3 of llm-providers (DESIGN §10), after the service and its clients
 > (SERVICE.md). It stacks on #3 (`connectLlm`).
 
 ## 1. Decided (2026-09-29)
@@ -122,8 +123,8 @@ each cut to `promptMaxChars`. Never on a span (Tempo is not for payloads), never
 by default. Captured records carry `captured=true` so a Loki retention rule can keep them short.
 
 **The dashboard** ("LLM gateway", provisioned from `platform`): calls and errors by app; p50/p95
-latency by model and kind; tokens and cost per app per day; warnings; System One; the slowest calls
-this hour with links to their traces and logs.
+latency by model and kind; tokens and cost per app; warnings; System One; every call, linked to its
+trace. *As built, it reads the per-call Loki records, not the Prometheus counters — see §14.*
 
 **Jarvis keeps its app-level metrics** (prompt size, decision parse failures, turn outcomes). They
 mean something only to Jarvis. The transport numbers move to the gateway, where every app gets
@@ -194,13 +195,28 @@ The agent runs
 
 ## 11. Acceptance
 
-- [ ] The gateway starts at login and restarts on crash; `gateway status` says so.
-- [ ] Jarvis and a second app call it with their own tokens; an unknown token is refused.
-- [ ] Grafana's "LLM gateway" dashboard shows calls, latency, tokens, cost and errors per app.
-- [ ] A Jarvis turn's trace contains the gateway span and the upstream call.
-- [ ] Prompt text appears in Loki only for an opted-in app or call; no key appears anywhere.
-- [ ] No app holds a provider key; Jarvis holds only its gateway token.
-- [ ] Grafana and OTLP are reachable on 127.0.0.1 only.
+- [x] **The gateway starts at login and restarts on crash.** A launchd agent (`RunAtLoad`,
+      `KeepAlive`); `kill -9` of its process → back in 5 s as a new pid, `runs = 2`.
+- [x] **Jarvis and a second app call it with their own tokens; an unknown token is refused.** Live:
+      `app=jarvis` (a turn from the app, and System One), `app=sports-follow` and `app=scripts` (the
+      Python client). A stranger's token → 401 `unauthorized` (unit tests, Python boundary test, and
+      against the built CLI).
+- [x] **Grafana's "LLM gateway" dashboard shows calls, latency, tokens, cost and errors per app.**
+      Every panel's query run through Grafana's own query API: 5 calls over three apps, spend per
+      app, latency by model and kind, tokens, a `truncated` warning, a `bad_request` error, a Jev
+      question by target and purpose, and every call in the log panel.
+- [x] **A Jarvis turn's trace contains the gateway span and the upstream call.** Tempo, trace
+      `3fa1c3c7…`: jarvis-server `socket.utterance` → `ai.decision` → `llm.complete` → `POST`, then
+      llm-gateway `llm.complete` → `POST` (OpenRouter) — one trace, two processes.
+- [x] **Prompt text appears in Loki only for an opted-in app or call; no key appears anywhere.**
+      Loki: `scripts` records `captured=true` with the prompt and reply; `jarvis` and
+      `sports-follow` `captured=false`, no text. Unit tests assert no token in any span or record.
+- [x] **No app holds a provider key; Jarvis holds only its gateway token.** Jarvis runs with both
+      model keys forced empty; `LLM_PROVIDERS_TOKEN` was written to its `.env` by
+      `./gateway new-app jarvis --env-file …`, never printed. *Its `.env` still carries the two old
+      key lines, unread — yours to delete.*
+- [x] **Grafana and OTLP are reachable on 127.0.0.1 only.** `docker ps`:
+      `127.0.0.1:3001->3000`, `127.0.0.1:4317-4318->4317-4318`.
 
 ## 12. Build order (gates are yours)
 
@@ -225,3 +241,30 @@ The agent runs
   ever grows, the gateway can bucket models it has not seen before.
 - **Docker for observability.** Without Docker there are no dashboards — but the gateway keeps
   working and logging to stderr; telemetry is never on the request path.
+
+## 14. As built — what changed against this design
+
+- **The dashboard reads Loki, not Prometheus.** Prometheus `rate()`/`increase()` need two samples of
+  a series, so a counter's FIRST increment — each new app/model/kind combination's first call — is
+  invisible to them; at the traffic of a few personal apps that is most calls (seen live: three
+  apps, three calls, every rate panel at 0). The standard fix, created-timestamp zero ingestion,
+  was tried and does not apply to OTLP in the Prometheus the LGTM image ships (3.2.1). The
+  gateway already writes one Loki record per call, so the panels count and sum those —
+  `count_over_time`, and `unwrap` of `ms`, `cost_usd`, `input_tokens`, `output_tokens` — which is
+  exact at any traffic. Those record fields are therefore a contract with the dashboard. The
+  `llm_*` Prometheus metrics stay, for alerting and long-range trends; in-flight is read from them.
+- **A call's `warnings` is one comma-joined string in its log record**, so a query can group by it
+  (an array lands in Loki as its JSON text).
+- **A refused app token is not a call record.** It is refused before the call exists, so it is in
+  the gateway's log (401), not on the dashboard. Recording refused attempts is a possible follow-up.
+- **Each app's own dashboard stays in its repo** (beside the metrics it queries, and — for Jarvis —
+  a test that checks it), and `platform`'s compose file mounts it; only the LLM gateway dashboard
+  lives in `platform`. It is built by `grafana/build-llm-gateway-dashboard.py`.
+- **`./gateway restart` waits out launchd's teardown.** `bootout` returns before the agent is gone,
+  and a `bootstrap` in that window fails ("Input/output error") — found on the first restart after
+  an install, which left the gateway down.
+- **The keys file holds one provider key set plus a token per app** (`OPENROUTER_API_KEY`,
+  `ANTHROPIC_API_KEY`, `JARVIS_GATEWAY_TOKEN`, …); the interim `JARVIS_…` provider-key names were
+  renamed in place, values unchanged (checked by hash).
+- **The Grafana stack reuses Jarvis's data volume** (`newchat_newchat-otel-data`), so its history
+  carried over.
